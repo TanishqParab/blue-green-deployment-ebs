@@ -1,0 +1,125 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = "us-east-1"
+        AWS_CREDENTIALS_ID = "aws-credentials"
+        TF_WORKING_DIR = "/var/lib/jenkins/workspace/blue-green-deployment-job/blue-green-deployment"
+        APP_FILE = "app.py"
+        SSH_KEY_ID = "blue-green-key"
+        PRIVATE_KEY = credentials('blue-green-key')  // Fetch SSH private key from Jenkins credentials
+    }
+
+    stages {
+        stage('Initialize Terraform') {
+            steps {
+                script {
+                    echo "Initializing Terraform in ${TF_WORKING_DIR}"
+                    dir("${TF_WORKING_DIR}") {
+                        sh 'terraform init'
+                    }
+                }
+            }
+        }
+
+        stage('Plan Infrastructure') {
+            steps {
+                script {
+                    echo "Running Terraform plan"
+                    dir("${TF_WORKING_DIR}") {
+                        withCredentials([sshUserPrivateKey(credentialsId: 'blue-green-key', keyFileVariable: 'SSH_KEY')]) {
+                            sh """
+                            export TF_VAR_private_key_path=\$SSH_KEY
+                            terraform plan -out=tfplan
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Apply Infrastructure') {
+            steps {
+                script {
+                    echo "Applying Terraform plan"
+                    dir("${TF_WORKING_DIR}") {
+                        sh 'terraform apply -auto-approve'
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Python App') {
+            steps {
+                script {
+                    echo "Waiting for Terraform outputs to be available..."
+                    sleep(30)  // Wait for Terraform state to be ready
+
+                    def blue_instance = sh(script: "terraform output -raw blue_instance_public_ip", returnStdout: true).trim()
+                    def green_instance = sh(script: "terraform output -raw green_instance_public_ip", returnStdout: true).trim()
+
+                    if (!blue_instance || !green_instance) {
+                        error "Failed to fetch instance IPs. Ensure Terraform state has valid outputs."
+                    }
+
+                    echo "Deploying app.py to instances: Blue (${blue_instance}), Green (${green_instance})"
+
+                    [blue_instance, green_instance].each { instance ->
+                        sshagent([SSH_KEY_ID]) {
+                            sh """
+                            echo "Copying app.py to ${instance}..."
+                            scp -o StrictHostKeyChecking=no /var/lib/jenkins/workspace/blue-green-deployment-job/blue-green-deployment/modules/ec2/scripts/app.py jenkins@${instance}:/home/jenkins/app.py
+
+                            echo "Starting Python app on ${instance}..."
+                            ssh jenkins@${instance} 'nohup python3 /home/jenkins/app.py > /home/jenkins/app.log 2>&1 &'
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Switch Traffic to Green') {
+            steps {
+                script {
+                    def active_instance = sh(script: "terraform output -raw active_instance", returnStdout: true).trim()
+                    def standby_instance = sh(script: "terraform output -raw standby_instance", returnStdout: true).trim()
+
+                    echo "Switching traffic to Green instance: ${standby_instance}"
+
+                    sh "aws elbv2 register-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=${standby_instance} --region ${AWS_REGION}"
+                    sh "sleep 30"
+
+                    echo "Deregistering Blue instance: ${active_instance}"
+                    sh "aws elbv2 deregister-targets --target-group-arn \$TARGET_GROUP_ARN --targets Id=${active_instance} --region ${AWS_REGION}"
+                }
+            }
+        }
+
+        stage('Wait Before Destroy') {
+            steps {
+                script {
+                    echo "Waiting for 15 minutes before destroying infrastructure..."
+                    sh "sleep 900"
+                }
+            }
+        }
+
+        stage('Destroy Infrastructure') {
+            steps {
+                script {
+                    echo "Destroying Infrastructure..."
+                    dir("${TF_WORKING_DIR}") {
+                        sh 'terraform destroy -auto-approve'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Destroy Completed!"
+        }
+    }
+}
