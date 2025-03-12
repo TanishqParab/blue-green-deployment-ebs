@@ -4,7 +4,7 @@ pipeline {
     environment {
         AWS_REGION = "us-east-1"
         AWS_CREDENTIALS_ID = "aws-credentials"
-        TF_WORKING_DIR = "/var/lib/jenkins/workspace/blue-green-deployment-job/blue-green-deployment"
+        TF_WORKING_DIR = "/var/lib/jenkins/workspace/blue-green-deployment-job-2/blue-green-deployment - Copy/blue-green-deployment"
         APP_FILE = "app.py"
         SSH_KEY_ID = "blue-green-key"
         PRIVATE_KEY = credentials('blue-green-key')  // Fetch SSH private key from Jenkins credentials
