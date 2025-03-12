@@ -5,9 +5,8 @@ pipeline {
         AWS_REGION = "us-east-1"
         AWS_CREDENTIALS_ID = "aws-credentials"
         TF_WORKING_DIR = "/var/lib/jenkins/workspace/blue-green-deployment-job-2/blue-green-deployment-copy/blue-green-deployment"
-        APP_FILE = "app.py"
         SSH_KEY_ID = "blue-green-key"
-        PRIVATE_KEY = credentials('blue-green-key')  // Fetch SSH private key from Jenkins credentials
+        PRIVATE_KEY = credentials('blue-green-key')
     }
 
     stages {
@@ -38,67 +37,23 @@ pipeline {
             }
         }
 
-        stage('Apply Infrastructure') {
+        stage('Apply Infrastructure & Deploy App') {
             steps {
                 script {
-                    echo "Applying Terraform plan"
+                    echo "Applying Terraform plan and deploying app"
                     dir("${TF_WORKING_DIR}") {
                         sh 'terraform apply -auto-approve'
-                    }
-                }
-            }
-        }
 
-        stage('Verify Terraform Outputs') {
-            steps {
-                script {
-                    echo "Waiting for Terraform to finalize..."
-                    sleep(30)  // Ensure Terraform has completed
-
-                    echo "Running Terraform refresh and fetching outputs..."
-                    dir("${TF_WORKING_DIR}") {
-                        sh 'terraform refresh'  // Refresh Terraform state
-                        sh 'terraform output'   // Display outputs
-
-                        // Fetch individual outputs
-                        def blue_instance = sh(script: "terraform output -raw blue_instance_public_ip", returnStdout: true).trim()
-                        def green_instance = sh(script: "terraform output -raw green_instance_public_ip", returnStdout: true).trim()
-
-                        if (!blue_instance || !green_instance) {
-                            error "Failed to fetch instance IPs. Ensure Terraform state has valid outputs."
-                        }
-
-                        echo "Terraform Outputs:"
-                        echo "Blue Instance IP: ${blue_instance}"
-                        echo "Green Instance IP: ${green_instance}"
-                    }
-                }
-            }
-        }
-
-        stage('Deploy Python App') {
-            steps {
-                script {
-                    echo "Waiting for Terraform outputs to be available..."
-                    sleep(30)  // Wait for Terraform state to be ready
-
-                    def blue_instance = sh(script: "terraform output -raw blue_instance_public_ip", returnStdout: true).trim()
-                    def green_instance = sh(script: "terraform output -raw green_instance_public_ip", returnStdout: true).trim()
-
-                    if (!blue_instance || !green_instance) {
-                        error "Failed to fetch instance IPs. Ensure Terraform state has valid outputs."
-                    }
-
-                    echo "Deploying app.py to instances: Blue (${blue_instance}), Green (${green_instance})"
-
-                    [blue_instance, green_instance].each { instance ->
+                        echo "Deploying Python app to instances..."
                         sshagent([SSH_KEY_ID]) {
                             sh """
-                            echo "Copying app.py to ${instance}..."
-                            scp -o StrictHostKeyChecking=no /var/lib/jenkins/workspace/blue-green-deployment-job-2/blue-green-deployment - Copy/blue-green-deployment/modules/ec2/scripts/app.py jenkins@${instance}:/home/jenkins/app.py
+                            for instance in $(terraform output -raw blue_instance_public_ip) $(terraform output -raw green_instance_public_ip); do
+                                echo "Copying app.py to $instance..."
+                                scp -o StrictHostKeyChecking=no modules/ec2/scripts/app.py jenkins@$instance:/home/jenkins/app.py
 
-                            echo "Starting Python app on ${instance}..."
-                            ssh jenkins@${instance} 'nohup python3 /home/jenkins/app.py > /home/jenkins/app.log 2>&1 &'
+                                echo "Starting Python app on $instance..."
+                                ssh jenkins@$instance 'nohup python3 /home/jenkins/app.py > /home/jenkins/app.log 2>&1 &'
+                            done
                             """
                         }
                     }
