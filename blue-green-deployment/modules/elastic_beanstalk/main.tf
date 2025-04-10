@@ -90,8 +90,8 @@ resource "aws_s3_object" "app_zip" {
   depends_on = [null_resource.package_app]
   bucket     = aws_s3_bucket.app_bucket.id
   key        = "app.zip"
-  source     = var.app_zip_path
-  etag       = filemd5(var.app_zip_path)
+  source     = "${path.root}/app.zip"
+  etag       = filemd5("${path.root}/app.zip")
 }
 # ================== CRITICAL CHANGES END HERE ==================
 
