@@ -1,2 +1,2 @@
-# blue-green-deployment-copy
-blue-green-deployment-copy (test)
+# blue-green-deployment-ebs
+blue-green-deployment-ebs(test)
