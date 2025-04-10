@@ -1,0 +1,19 @@
+/*
+resource "null_resource" "package_app" {
+  triggers = {
+    source_hash = filemd5("${var.app_source_dir}/requirements.txt")
+  }
+
+  provisioner "local-exec" {
+    command = "python3 modules/elastic_beanstalk/scripts/zip_app.py ${var.app_source_dir} ${var.app_zip_path}"
+  }
+}
+*/
+
+resource "aws_s3_object" "app_zip" {
+  #depends_on = [null_resource.package_app]
+  bucket     = aws_s3_bucket.app_bucket.id
+  key        = "app.zip"
+  source     = var.app_zip_path
+  etag       = filemd5(var.app_zip_path)
+}
