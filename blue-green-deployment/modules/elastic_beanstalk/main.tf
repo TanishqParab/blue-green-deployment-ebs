@@ -2,10 +2,21 @@ resource "random_id" "suffix" {
   byte_length = 4
 }
 
-# Use existing IAM Role instead of creating one
-data "aws_iam_role" "ssm_instance_role" {
+resource "aws_iam_role" "ssm_instance_role" {
   name = "SSMInstanceRole"
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
 }
+
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
 
 # EB Service Role
 resource "aws_iam_role" "beanstalk_service" {
@@ -75,8 +86,11 @@ resource "aws_elastic_beanstalk_application" "app" {
 resource "aws_s3_bucket" "app_bucket" {
   bucket        = "${var.app_name}-app-bucket-${random_id.suffix.hex}"
   force_destroy = true
-}
 
+  lifecycle {
+    prevent_destroy = false
+  }
+}
 resource "null_resource" "package_app" {
   triggers = {
     source_hash = filemd5("${var.app_source_dir}/requirements.txt")
@@ -101,6 +115,10 @@ resource "aws_elastic_beanstalk_application_version" "app_version" {
   application = aws_elastic_beanstalk_application.app.name
   bucket      = aws_s3_bucket.app_bucket.id
   key         = aws_s3_object.app_zip.key
+
+  depends_on = [
+    aws_s3_object.app_zip
+  ]
 }
 
 resource "aws_elastic_beanstalk_environment" "blue" {
@@ -109,6 +127,11 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   platform_arn        = var.platform_arn
   version_label       = aws_elastic_beanstalk_application_version.app_version.name
   cname_prefix        = var.cname_prefix_blue
+
+  depends_on = [
+    aws_elastic_beanstalk_application_version.app_version
+  ]
+
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
@@ -206,6 +229,10 @@ resource "aws_elastic_beanstalk_environment" "green" {
   platform_arn        = var.platform_arn
   version_label       = aws_elastic_beanstalk_application_version.app_version.name
   cname_prefix        = var.cname_prefix_green
+
+  depends_on = [
+    aws_elastic_beanstalk_application_version.app_version
+  ]
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
