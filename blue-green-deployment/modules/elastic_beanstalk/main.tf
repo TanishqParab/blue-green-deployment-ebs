@@ -99,7 +99,7 @@ resource "aws_elastic_beanstalk_application_version" "app_version" {
 resource "aws_elastic_beanstalk_environment" "blue" {
   name                = "${var.app_name}-blue"
   application         = aws_elastic_beanstalk_application.app.name
-  solution_stack_name = var.solution_stack_name
+  platform_arn = var.platform_arn
   version_label       = aws_elastic_beanstalk_application_version.app_version.name
 
   setting {
@@ -201,7 +201,7 @@ resource "aws_elastic_beanstalk_environment" "blue" {
 resource "aws_elastic_beanstalk_environment" "green" {
   name                = "${var.app_name}-green"
   application         = aws_elastic_beanstalk_application.app.name
-  solution_stack_name = var.solution_stack_name
+  platform_arn = var.platform_arn
   version_label       = aws_elastic_beanstalk_application_version.app_version.name
 
   setting {
