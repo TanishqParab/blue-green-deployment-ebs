@@ -43,3 +43,55 @@ variable "app_source_dir" {
   description = "Path to application source directory containing requirements.txt"
   type        = string
 }
+
+variable "s3_bucket" {
+  description = "Name of the S3 bucket where application ZIP will be uploaded"
+  type        = string
+}
+
+variable "blue_env_name" {
+  description = "Elastic Beanstalk environment name for the Blue deployment"
+  type        = string
+}
+
+variable "green_env_name" {
+  description = "Elastic Beanstalk environment name for the Green deployment"
+  type        = string
+}
+
+variable "env_settings" {
+  description = "Environment configuration settings to apply to both environments"
+  type = list(object({
+    namespace = string
+    name      = string
+    value     = string
+  }))
+  default = []
+}
+
+variable "environment_tier" {
+  description = "Environment tier type (e.g., WebServer or Worker)"
+  type        = string
+  default     = "WebServer"
+}
+
+variable "rolling_update_enabled" {
+  description = "Whether rolling updates are enabled for the environments"
+  type        = bool
+  default     = true
+}
+
+variable "iam_service_role_arn" {
+  description = "IAM service role ARN for Elastic Beanstalk environments"
+  type        = string
+}
+
+variable "cname_prefix_blue" {
+  description = "CNAME prefix for the Blue Elastic Beanstalk environment"
+  type        = string
+}
+
+variable "cname_prefix_green" {
+  description = "CNAME prefix for the Green Elastic Beanstalk environment"
+  type        = string
+}
