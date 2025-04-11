@@ -34,7 +34,7 @@ module "alb" {
 module "elastic_beanstalk" {
   source            = "./modules/elastic_beanstalk"
   app_name            = var.app_name
-  solution_stack_name = var.solution_stack_name
+  platform_arn = var.platform_arn
   app_zip_path        = var.app_zip_path
   version_label       = var.version_label
   instance_type       = var.instance_type
