@@ -1,5 +1,9 @@
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
 resource "aws_iam_role" "beanstalk_service" {
-  name = "${var.app_name}-elasticbeanstalk-service-role"
+  name = "${var.app_name}-elasticbeanstalk-service-role-${random_id.suffix.hex}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
@@ -28,7 +32,7 @@ resource "aws_iam_role_policy_attachment" "beanstalk_service_managed_updates" {
 }
 
 resource "aws_iam_role" "beanstalk_ec2" {
-  name = "${var.app_name}-elasticbeanstalk-ec2-role"
+  name = "${var.app_name}-elasticbeanstalk-ec2-role-${random_id.suffix.hex}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
@@ -42,7 +46,7 @@ resource "aws_iam_role" "beanstalk_ec2" {
 }
 
 resource "aws_iam_instance_profile" "beanstalk_ec2" {
-  name = "${var.app_name}-elasticbeanstalk-ec2-role"
+  name = "${var.app_name}-elasticbeanstalk-ec2-profile-${random_id.suffix.hex}"
   role = aws_iam_role.beanstalk_ec2.name
 }
 
@@ -59,10 +63,6 @@ resource "aws_iam_role_policy_attachment" "beanstalk_ec2_worker" {
 resource "aws_elastic_beanstalk_application" "app" {
   name        = var.app_name
   description = "Elastic Beanstalk application for Blue-Green deployment"
-}
-
-resource "random_id" "suffix" {
-  byte_length = 4
 }
 
 resource "aws_s3_bucket" "app_bucket" {
