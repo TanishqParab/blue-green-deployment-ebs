@@ -8,7 +8,6 @@ private_key_base64  = "LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlKS0FJQkFBS
 public_key_path     = "/var/lib/jenkins/workspace/blue-green-deployment-job/blue-green-deployment/blue-green-key.pub"
 
 app_name            = "my-blue-green-app"
-platform_arn = "arn:aws:elasticbeanstalk:us-east-1::platform/Python 3.12 AL2023/4.5.0"
 app_zip_path        = "./app.zip"
 app_source_dir  = "./modules/elastic_beanstalk/scripts"
 version_label       = "v1.0.0"
