@@ -3,8 +3,11 @@ resource "random_id" "suffix" {
 }
 
 resource "aws_iam_role" "ssm_instance_role" {
-  name = "SSMInstanceRole"
+  name               = "SSMInstanceRole-${random_id.suffix.hex}"
   assume_role_policy = data.aws_iam_policy_document.assume_role.json
+  tags = {
+    Environment = "Blue-Green"
+  }
 }
 
 data "aws_iam_policy_document" "assume_role" {
@@ -17,6 +20,15 @@ data "aws_iam_policy_document" "assume_role" {
   }
 }
 
+resource "aws_iam_role_policy_attachment" "ssm_managed" {
+  role       = aws_iam_role.ssm_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ssm_instance_profile" {
+  name = "SSMInstanceProfile-${random_id.suffix.hex}"
+  role = aws_iam_role.ssm_instance_role.name
+}
 
 # EB Service Role
 resource "aws_iam_role" "beanstalk_service" {
