@@ -1,16 +1,14 @@
 resource "aws_iam_role" "beanstalk_service" {
   name = "${var.app_name}-elasticbeanstalk-service-role"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "elasticbeanstalk.amazonaws.com"
-        }
+    Version = "2012-10-17",
+    Statement = [{
+      Action = "sts:AssumeRole",
+      Effect = "Allow",
+      Principal = {
+        Service = "elasticbeanstalk.amazonaws.com"
       }
-    ]
+    }]
   })
 }
 
@@ -29,25 +27,23 @@ resource "aws_iam_role_policy_attachment" "beanstalk_service_managed_updates" {
   policy_arn = "arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy"
 }
 
-resource "aws_iam_instance_profile" "beanstalk_ec2" {
-  name = "${var.app_name}-elasticbeanstalk-ec2-role"
-  role = aws_iam_role.beanstalk_ec2.name
-}
-
 resource "aws_iam_role" "beanstalk_ec2" {
   name = "${var.app_name}-elasticbeanstalk-ec2-role"
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
+    Version = "2012-10-17",
+    Statement = [{
+      Action = "sts:AssumeRole",
+      Effect = "Allow",
+      Principal = {
+        Service = "ec2.amazonaws.com"
       }
-    ]
+    }]
   })
+}
+
+resource "aws_iam_instance_profile" "beanstalk_ec2" {
+  name = "${var.app_name}-elasticbeanstalk-ec2-role"
+  role = aws_iam_role.beanstalk_ec2.name
 }
 
 resource "aws_iam_role_policy_attachment" "beanstalk_ec2" {
@@ -65,16 +61,14 @@ resource "aws_elastic_beanstalk_application" "app" {
   description = "Elastic Beanstalk application for Blue-Green deployment"
 }
 
-resource "aws_s3_bucket" "app_bucket" {
-  bucket = "${var.app_name}-app-bucket-${random_id.suffix.hex}"
-  force_destroy = true
-}
-
 resource "random_id" "suffix" {
   byte_length = 4
 }
 
-# ================== CRITICAL CHANGES START HERE ==================
+resource "aws_s3_bucket" "app_bucket" {
+  bucket        = "${var.app_name}-app-bucket-${random_id.suffix.hex}"
+  force_destroy = true
+}
 
 resource "null_resource" "package_app" {
   triggers = {
@@ -87,13 +81,13 @@ resource "null_resource" "package_app" {
 }
 
 resource "aws_s3_object" "app_zip" {
-  depends_on = [null_resource.package_app]
-  bucket     = aws_s3_bucket.app_bucket.id
-  key        = "app.zip"
-  source     = "${path.root}/app.zip"
-  etag       = filemd5("${path.root}/app.zip")
+  depends_on   = [null_resource.package_app]
+  bucket       = aws_s3_bucket.app_bucket.id
+  key          = "app.zip"
+  source       = "${path.root}/app.zip"
+  content_type = "application/zip"
+  etag         = try(filemd5("${path.root}/app.zip"), "")
 }
-# ================== CRITICAL CHANGES END HERE ==================
 
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
@@ -114,11 +108,10 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "${var.app_name}-blue"
   }
 
-  # IAM Settings
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "ServiceRole"
-    value     = aws_iam_role.beanstalk_service.name
+    value     = aws_iam_role.beanstalk_service.arn
   }
 
   setting {
@@ -127,7 +120,6 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = aws_iam_instance_profile.beanstalk_ec2.name
   }
 
-  # Proxy Configuration (Critical for 502 fixes)
   setting {
     namespace = "aws:elasticbeanstalk:environment:proxy"
     name      = "ProxyServer"
@@ -140,11 +132,10 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "static/"
   }
 
-  # Application Configuration
   setting {
     namespace = "aws:elasticbeanstalk:container:python"
     name      = "WSGIPath"
-    value     = var.wsgi_path # Should be like "myapp:application"
+    value     = var.wsgi_path
   }
 
   setting {
@@ -159,7 +150,6 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "15"
   }
 
-  # Health Check Configuration
   setting {
     namespace = "aws:elasticbeanstalk:application"
     name      = "Application Healthcheck URL"
@@ -184,7 +174,6 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "600"
   }
 
-  # Infrastructure Settings
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "InstanceType"
@@ -221,11 +210,10 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = "${var.app_name}-green"
   }
 
-  # IAM Settings
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "ServiceRole"
-    value     = aws_iam_role.beanstalk_service.name
+    value     = aws_iam_role.beanstalk_service.arn
   }
 
   setting {
@@ -234,7 +222,6 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = aws_iam_instance_profile.beanstalk_ec2.name
   }
 
-  # Proxy Configuration
   setting {
     namespace = "aws:elasticbeanstalk:environment:proxy"
     name      = "ProxyServer"
@@ -247,7 +234,6 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = "static/"
   }
 
-  # Application Configuration
   setting {
     namespace = "aws:elasticbeanstalk:container:python"
     name      = "WSGIPath"
@@ -266,7 +252,6 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = "15"
   }
 
-  # Health Check Configuration
   setting {
     namespace = "aws:elasticbeanstalk:application"
     name      = "Application Healthcheck URL"
@@ -291,7 +276,6 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = "600"
   }
 
-  # Infrastructure Settings
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "InstanceType"
