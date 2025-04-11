@@ -3,8 +3,8 @@ variable "app_name" {
   type        = string
 }
 
-variable "solution_stack_name" {
-  description = "Elastic Beanstalk solution stack (e.g. '64bit Amazon Linux 2 v3.5.8 running Python 3.8')"
+variable "platform_arn" {
+  description = "Elastic Beanstalk platform ARN to use (e.g., Python 3.8)"
   type        = string
 }
 
