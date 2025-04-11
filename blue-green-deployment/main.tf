@@ -41,7 +41,18 @@ module "elastic_beanstalk" {
   wsgi_path = var.wsgi_path
   health_check_path = var.health_check_path
   app_source_dir = var.app_source_dir
+
+  s3_bucket            = var.s3_bucket
+  blue_env_name        = var.blue_env_name
+  green_env_name       = var.green_env_name
+  env_settings         = var.env_settings
+  environment_tier     = var.environment_tier
+  rolling_update_enabled = var.rolling_update_enabled
+  iam_service_role_arn = var.iam_service_role_arn
+  cname_prefix_blue = var.cname_prefix_blue
+  cname_prefix_green = var.cname_prefix_green
 }
+
 
 module "asg" {
   source               = "./modules/asg"
