@@ -53,7 +53,7 @@ module "elastic_beanstalk" {
   iam_service_role_arn = var.iam_service_role_arn
   cname_prefix_blue = var.cname_prefix_blue
   cname_prefix_green = var.cname_prefix_green
-  ec2_sg_id               = module.security_group.ec2_sg_id
+  ec2_sg_id               = var.ec2_sg_id != null ? var.ec2_sg_id : module.security_group.security_group_id
 }
 
 
