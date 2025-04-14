@@ -113,19 +113,29 @@ resource "null_resource" "package_app" {
   }
 }
 
-resource "aws_s3_object" "app_zip" {
-  depends_on   = [null_resource.package_app]
-  bucket       = aws_s3_bucket.app_bucket.id
-  key          = "app.zip"
-  source       = "${path.module}/scripts/app.zip"
-  content_type = "application/zip"
-  source_hash  = filebase64sha256("${path.module}/scripts/app.zip")
-  etag         = null
-
-  lifecycle {
-    ignore_changes = [source_hash]  # Corrected the syntax here
-  }
-}
+resource "null_resource" "package_app" {
+   triggers = {
+     source_hash = filemd5("${var.app_source_dir}/requirements.txt")
+   }
+ 
+   provisioner "local-exec" {
+     command = "python3 modules/elastic_beanstalk/scripts/zip_app.py ${var.app_source_dir} ${var.app_zip_path}"
+   }
+ }
+ 
+ resource "aws_s3_object" "app_zip" {
+   depends_on   = [null_resource.package_app]
+   bucket       = aws_s3_bucket.app_bucket.id
+   key          = "app.zip"
+   source       = "${path.root}/app.zip"
+   content_type = "application/zip"
+   etag         = try(filemd5("${path.root}/app.zip"), "")
+ 
+   # 👇 THIS IS THE FIX
+   lifecycle {
+     ignore_changes = [etag]
+   }
+ }
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
   application = aws_elastic_beanstalk_application.app.name
