@@ -201,3 +201,8 @@ variable "cname_prefix_green" {
   type        = string
 }
 
+variable "ec2_sg_id" {
+  description = "Security group ID for Elastic Beanstalk EC2 instances"
+  type        = string
+}
+
