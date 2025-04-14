@@ -19,7 +19,7 @@ enable_https        = false
 # Load Balancer Health Check Path
 health_check_path = "/health" 
 
-wsgi_path = "app:app" # Replace with your actual WSGI path
+wsgi_path = "app:application" # Replace with your actual WSGI path
 
 cname_prefix_blue = "my-blue-env"
 cname_prefix_green = "my-green-env"
