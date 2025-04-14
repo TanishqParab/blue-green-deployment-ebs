@@ -95,3 +95,8 @@ variable "cname_prefix_green" {
   description = "CNAME prefix for the Green Elastic Beanstalk environment"
   type        = string
 }
+
+variable "ec2_sg_id" {
+  description = "Security group ID for Elastic Beanstalk EC2 instances"
+  type        = string
+}
