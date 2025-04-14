@@ -230,6 +230,13 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "enhanced"
   }
 
+  # ✅ Allow EB instances to use the custom SG (with port 5000 open)
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "SecurityGroups"
+    value     = var.ec2_sg_id
+  }
+
   tags = {
     Name        = "Blue-Environment"
     Environment = "Blue"
@@ -330,6 +337,13 @@ resource "aws_elastic_beanstalk_environment" "green" {
     namespace = "aws:elasticbeanstalk:healthreporting:system"
     name      = "SystemType"
     value     = "enhanced"
+  }
+
+  # ✅ Allow EB instances to use the custom SG (with port 5000 open)
+  setting {
+    namespace = "aws:autoscaling:launchconfiguration"
+    name      = "SecurityGroups"
+    value     = var.ec2_sg_id
   }
 
   tags = {
