@@ -103,15 +103,7 @@ resource "aws_s3_bucket" "app_bucket" {
     prevent_destroy = false
   }
 }
-resource "null_resource" "package_app" {
-  provisioner "local-exec" {
-    command = "zip -r ${path.module}/scripts/app.zip ${path.module}/scripts/app.py ${path.module}/scripts/requirements.txt"
-  }
 
-  triggers = {
-    always_run = "${timestamp()}"
-  }
-}
 
 resource "null_resource" "package_app" {
    triggers = {
