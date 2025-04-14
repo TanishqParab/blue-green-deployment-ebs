@@ -117,13 +117,13 @@ resource "aws_s3_object" "app_zip" {
   depends_on   = [null_resource.package_app]
   bucket       = aws_s3_bucket.app_bucket.id
   key          = "app.zip"
-  source       = "${path.module}/scripts/app.zip"  # app.zip is now in the scripts folder
+  source       = "${path.module}/scripts/app.zip"
   content_type = "application/zip"
-  source_hash  = filebase64sha256("${path.module}/scripts/app.zip")  # Correct path to app.zip in the scripts folder
+  source_hash  = filebase64sha256("${path.module}/scripts/app.zip")
   etag         = null
 
   lifecycle {
-    ignore_changes = [source hash]
+    ignore_changes = [source_hash]  # Corrected the syntax here
   }
 }
 resource "aws_elastic_beanstalk_application_version" "app_version" {
