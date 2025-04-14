@@ -16,6 +16,7 @@ module "security_group" {
   vpc_id = module.vpc.vpc_id
 }
 
+/*
 module "alb" {
   source            = "./modules/alb"
   vpc_id            = module.vpc.vpc_id
@@ -28,6 +29,7 @@ module "alb" {
   healthy_threshold   = var.healthy_threshold
   unhealthy_threshold = var.unhealthy_threshold
 }
+*/
 
 
 
@@ -54,6 +56,7 @@ module "elastic_beanstalk" {
 }
 
 
+/*
 module "asg" {
   source               = "./modules/asg"
   subnet_ids           = module.vpc.public_subnet_ids # Ensure this output exists
@@ -67,5 +70,7 @@ module "asg" {
 }
 
 ### ALB Module variables.tf
+*/
+
 
 
