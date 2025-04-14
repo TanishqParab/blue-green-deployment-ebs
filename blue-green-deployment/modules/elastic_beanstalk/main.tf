@@ -104,12 +104,12 @@ resource "aws_s3_bucket" "app_bucket" {
   }
 }
 resource "null_resource" "package_app" {
-  triggers = {
-    source_hash = filemd5("${var.app_source_dir}/requirements.txt")
+  provisioner "local-exec" {
+    command = "zip -r ${path.module}/scripts/app.zip ${path.module}/scripts/app.py ${path.module}/scripts/requirements.txt"
   }
 
-  provisioner "local-exec" {
-    command = "python3 modules/elastic_beanstalk/scripts/zip_app.py ${var.app_source_dir} ${var.app_zip_path}"
+  triggers = {
+    always_run = "${timestamp()}"
   }
 }
 
@@ -117,17 +117,15 @@ resource "aws_s3_object" "app_zip" {
   depends_on   = [null_resource.package_app]
   bucket       = aws_s3_bucket.app_bucket.id
   key          = "app.zip"
-  source       = "${path.root}/app.zip"
+  source       = "${path.module}/scripts/app.zip"  # app.zip is now in the scripts folder
   content_type = "application/zip"
-  source_hash = filebase64sha256("${path.module}/scripts/app.zip")
+  source_hash  = filebase64sha256("${path.module}/scripts/app.zip")  # Correct path to app.zip in the scripts folder
   etag         = null
 
-  # 👇 THIS IS THE FIX
   lifecycle {
     ignore_changes = [etag]
   }
 }
-
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
   application = aws_elastic_beanstalk_application.app.name
