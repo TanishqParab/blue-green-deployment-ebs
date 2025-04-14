@@ -123,7 +123,7 @@ resource "aws_s3_object" "app_zip" {
   etag         = null
 
   lifecycle {
-    ignore_changes = [etag]
+    ignore_changes = [source hash]
   }
 }
 resource "aws_elastic_beanstalk_application_version" "app_version" {
