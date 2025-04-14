@@ -122,6 +122,7 @@ resource "null_resource" "package_app" {
    source       = "${path.root}/app.zip"
    content_type = "application/zip"
    etag         = try(filemd5("${path.root}/app.zip"), "")
+  }
  
   /*
    # 👇 THIS IS THE FIX
