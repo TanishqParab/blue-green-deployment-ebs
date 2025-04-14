@@ -119,14 +119,14 @@ resource "aws_s3_object" "app_zip" {
   key          = "app.zip"
   source       = "${path.root}/app.zip"
   content_type = "application/zip"
-  etag         = try(filemd5("${path.root}/app.zip"), "")
+  source_hash = filebase64sha256("${path.module}/scripts/app.zip")
+  etag         = null
 
   # 👇 THIS IS THE FIX
   lifecycle {
     ignore_changes = [etag]
   }
 }
-
 
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
