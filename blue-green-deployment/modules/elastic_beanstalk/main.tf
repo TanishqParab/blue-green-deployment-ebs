@@ -200,9 +200,9 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "HealthCheckInterval"
-    value     = "60"  # Adjust this value as necessary
+    namespace = "aws:elb:healthcheck"
+    name      = "Interval"
+    value     = "60"
   }
 
   setting {
@@ -301,9 +301,9 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "HealthCheckInterval"
-    value     = "60"  # Adjust this value as necessary
+    namespace = "aws:elb:healthcheck"
+    name      = "Interval"
+    value     = "60"
   }
 
   setting {
