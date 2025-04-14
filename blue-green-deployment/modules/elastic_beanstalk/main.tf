@@ -212,10 +212,23 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace  = "aws:autoscaling:launchconfiguration"
-    name       = "HealthCheckGracePeriod"
-    value      = "600"
+    namespace = "aws:elb:healthcheck"
+    name      = "HealthyThreshold"
+    value     = "5"
   }
+
+  setting {
+    namespace = "aws:elb:healthcheck"
+    name      = "UnhealthyThreshold"
+    value     = "5"
+  }
+
+  setting {
+    namespace = "aws:elb:healthcheck"
+    name      = "Timeout"
+    value     = "5"
+  }
+
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "InstanceType"
@@ -317,12 +330,25 @@ resource "aws_elastic_beanstalk_environment" "green" {
     name      = "Interval"
     value     = "60"
   }
-  
+
   setting {
-    namespace  = "aws:autoscaling:launchconfiguration"
-    name       = "HealthCheckGracePeriod"
-    value      = "600"
+    namespace = "aws:elb:healthcheck"
+    name      = "HealthyThreshold"
+    value     = "5"
   }
+
+  setting {
+    namespace = "aws:elb:healthcheck"
+    name      = "UnhealthyThreshold"
+    value     = "5"
+  }
+
+  setting {
+    namespace = "aws:elb:healthcheck"
+    name      = "Timeout"
+    value     = "5"
+  }
+
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "InstanceType"
