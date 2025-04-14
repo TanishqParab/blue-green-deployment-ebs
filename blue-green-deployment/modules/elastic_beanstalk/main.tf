@@ -205,12 +205,13 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "60"
   }
 
+  /*
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "Health check grace period"
     value     = "600"
   }
-
+  */
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "InstanceType"
@@ -305,13 +306,14 @@ resource "aws_elastic_beanstalk_environment" "green" {
     name      = "Interval"
     value     = "60"
   }
-
+  
+  /*
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "Health check grace period"
     value     = "600"
   }
-
+  */
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "InstanceType"
