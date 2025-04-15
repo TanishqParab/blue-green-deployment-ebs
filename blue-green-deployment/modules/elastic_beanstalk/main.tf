@@ -93,6 +93,10 @@ resource "aws_iam_role_policy_attachment" "beanstalk_ec2_worker" {
 resource "aws_elastic_beanstalk_application" "app" {
   name        = var.app_name
   description = "Elastic Beanstalk application for Blue-Green deployment"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_s3_bucket" "app_bucket" {
@@ -103,7 +107,6 @@ resource "aws_s3_bucket" "app_bucket" {
     prevent_destroy = false
   }
 }
-
 
 resource "null_resource" "package_app" {
    triggers = {
