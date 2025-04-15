@@ -124,13 +124,13 @@ resource "null_resource" "package_app" {
    etag         = try(filemd5("${path.root}/app.zip"), "")
   }
  
-  /*
+  
    # 👇 THIS IS THE FIX
    lifecycle {
      ignore_changes = [etag]
    }
  }
-*/
+
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
   application = aws_elastic_beanstalk_application.app.name
