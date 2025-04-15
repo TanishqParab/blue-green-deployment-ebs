@@ -93,10 +93,6 @@ resource "aws_iam_role_policy_attachment" "beanstalk_ec2_worker" {
 resource "aws_elastic_beanstalk_application" "app" {
   name        = var.app_name
   description = "Elastic Beanstalk application for Blue-Green deployment"
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_s3_bucket" "app_bucket" {
@@ -127,13 +123,13 @@ resource "null_resource" "package_app" {
    etag         = try(filemd5("${path.root}/app.zip"), "")
   }
  
-  
+    /*
    # 👇 THIS IS THE FIX
    lifecycle {
      ignore_changes = [etag]
    }
  }
-
+*/
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
   application = aws_elastic_beanstalk_application.app.name
