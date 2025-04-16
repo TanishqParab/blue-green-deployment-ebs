@@ -119,14 +119,8 @@ resource "aws_s3_object" "app_zip" {
   bucket       = aws_s3_bucket.app_bucket.id
   key          = "app.zip"
   source       = "${path.root}/app.zip"
+  source_hash  = filemd5("${path.root}/app.zip")
   content_type = "application/zip"
-  etag         = try(filemd5("${path.root}/app.zip"), "")
-
-  /*
-  lifecycle {
-    ignore_changes = [etag]
-  }
-  */
 }
 
 
