@@ -122,11 +122,11 @@ resource "aws_s3_object" "app_zip" {
   content_type = "application/zip"
   etag         = try(filemd5("${path.root}/app.zip"), "")
 
-  /*
+  
   lifecycle {
     ignore_changes = [etag]
   }
-  */
+  
 }
 
 
