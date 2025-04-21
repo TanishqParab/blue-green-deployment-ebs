@@ -2,7 +2,7 @@ resource "aws_lb" "main" {
   name               = "blue-green-alb"
   internal           = false
   load_balancer_type = "application"
-  security_groups    = [var.ec2_sg_id]
+  security_groups    = var.ec2_sg_id != null ? [var.ec2_sg_id] : []
   subnets            = var.subnet_ids  # Now it will receive a list of subnets
 }
 
