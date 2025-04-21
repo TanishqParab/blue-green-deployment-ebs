@@ -101,3 +101,18 @@ variable "ec2_sg_id" {
   type        = string
   default = null
 }
+
+variable "custom_alb_arn" {
+  description = "ARN of the external ALB to attach EB environments to"
+  type        = string
+}
+
+variable "custom_blue_tg_arn" {
+  description = "ARN of the blue target group"
+  type        = string
+}
+
+variable "custom_green_tg_arn" {
+  description = "ARN of the green target group"
+  type        = string
+}
