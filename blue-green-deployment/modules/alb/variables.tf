@@ -11,7 +11,6 @@ variable "subnet_ids" {
 variable "ec2_sg_id" {
   description = "Security group ID for Elastic Beanstalk EC2 instances"
   type        = string
-  default = null
 }
 
 
