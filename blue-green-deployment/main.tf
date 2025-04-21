@@ -20,7 +20,7 @@ module "alb" {
   source            = "./modules/alb"
   vpc_id            = module.vpc.vpc_id
   subnet_ids        = module.vpc.public_subnet_ids # 🔥 Fix: Use correct attribute
-  security_group_id = module.security_group.security_group_id
+  ec2_sg_id               = var.ec2_sg_id != null ? var.ec2_sg_id : module.security_group.security_group_id
   listener_port = var.listener_port
   health_check_path = var.health_check_path
   health_check_interval = var.health_check_interval
