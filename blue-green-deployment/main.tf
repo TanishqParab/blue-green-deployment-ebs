@@ -20,7 +20,7 @@ module "alb" {
   source            = "./modules/alb"
   vpc_id            = module.vpc.vpc_id
   subnet_ids        = module.vpc.public_subnet_ids # 🔥 Fix: Use correct attribute
-  ec2_sg_id =  var.ec2_sg_id != null ? [var.ec2_sg_id] : []
+  ec2_sg_id = var.ec2_sg_id != null ? var.ec2_sg_id : module.security_group.ec2_sg_id
   listener_port = var.listener_port
   health_check_path = var.health_check_path
   health_check_interval = var.health_check_interval
@@ -51,7 +51,7 @@ module "elastic_beanstalk" {
   iam_service_role_arn = var.iam_service_role_arn
   cname_prefix_blue = var.cname_prefix_blue
   cname_prefix_green = var.cname_prefix_green
-  ec2_sg_id =  var.ec2_sg_id != null ? [var.ec2_sg_id] : []
+  ec2_sg_id = var.ec2_sg_id != null ? var.ec2_sg_id : module.security_group.ec2_sg_id
   custom_alb_arn    = var.custom_alb_arn != null ? var.custom_alb_arn : module.alb.alb_arn
   custom_blue_tg_arn = var.custom_blue_tg_arn != null ? var.custom_blue_tg_arn : module.alb.blue_target_group_arn
   custom_green_tg_arn = var.custom_green_tg_arn != null ? var.custom_green_tg_arn : module.alb.green_target_group_arn
