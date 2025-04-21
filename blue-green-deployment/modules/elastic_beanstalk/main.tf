@@ -283,10 +283,13 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   # ✅ Allow EB instances to use the custom SG (with port 5000 open)
-  setting {
-    namespace = "aws:autoscaling:launchconfiguration"
-    name      = "SecurityGroups"
-    value     = var.ec2_sg_id
+  dynamic "setting" {
+    for_each = var.ec2_sg_id != null ? [1] : []
+    content {
+      namespace = "aws:autoscaling:launchconfiguration"
+      name      = "SecurityGroups"
+      value     = var.ec2_sg_id
+    }
   }
 
 
@@ -442,10 +445,13 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   # ✅ Allow EB instances to use the custom SG (with port 5000 open)
-  setting {
-    namespace = "aws:autoscaling:launchconfiguration"
-    name      = "SecurityGroups"
-    value     = var.ec2_sg_id
+  dynamic "setting" {
+    for_each = var.ec2_sg_id != null ? [1] : []
+    content {
+      namespace = "aws:autoscaling:launchconfiguration"
+      name      = "SecurityGroups"
+      value     = var.ec2_sg_id
+    }
   }
 
   tags = {
