@@ -8,10 +8,12 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
-variable "security_group_id" {
-  description = "Security Group ID for the ALB"
+variable "ec2_sg_id" {
+  description = "Security group ID for Elastic Beanstalk EC2 instances"
   type        = string
+  default = null
 }
+
 
 variable "listener_port" {
   description = "Listener port for the ALB"
