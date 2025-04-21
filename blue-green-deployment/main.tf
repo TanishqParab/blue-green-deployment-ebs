@@ -16,7 +16,6 @@ module "security_group" {
   vpc_id = module.vpc.vpc_id
 }
 
-/*
 module "alb" {
   source            = "./modules/alb"
   vpc_id            = module.vpc.vpc_id
@@ -29,7 +28,6 @@ module "alb" {
   healthy_threshold   = var.healthy_threshold
   unhealthy_threshold = var.unhealthy_threshold
 }
-*/
 
 
 
@@ -54,7 +52,11 @@ module "elastic_beanstalk" {
   cname_prefix_blue = var.cname_prefix_blue
   cname_prefix_green = var.cname_prefix_green
   ec2_sg_id               = var.ec2_sg_id != null ? var.ec2_sg_id : module.security_group.security_group_id
+  custom_alb_arn = var.custom_alb_arn
+  custom_blue_tg_arn = var.custom_blue_tg_arn
+  custom_green_tg_arn = var.custom_green_tg_arn
 }
+
 
 
 /*
