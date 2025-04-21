@@ -46,16 +46,22 @@ variable "listener_port" {
   default = 80
 }
 
+variable "alb_arn" {
+  description = "ARN of the Application Load Balancer"
+  type        = string
+  default     = null
+}
+
 variable "blue_target_group_arn" {
   description = "ARN of the Blue target group"
   type        = string
-  default     = ""
+  default     = null
 }
 
 variable "green_target_group_arn" {
   description = "ARN of the Green target group"
   type        = string
-  default     = ""
+  default     = null
 }
 
 variable "min_size" {
