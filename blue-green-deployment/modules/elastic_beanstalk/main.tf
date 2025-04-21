@@ -104,6 +104,7 @@ resource "aws_s3_bucket" "app_bucket" {
   }
 }
 
+
 resource "null_resource" "package_app" {
    triggers = {
      source_hash = filemd5("${var.app_source_dir}/requirements.txt")
@@ -123,7 +124,6 @@ resource "aws_s3_object" "app_zip" {
   content_type = "application/zip"
 }
 
-
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
   application = aws_elastic_beanstalk_application.app.name
@@ -135,6 +135,7 @@ resource "aws_elastic_beanstalk_application_version" "app_version" {
   ]
 }
 
+
 resource "aws_elastic_beanstalk_environment" "blue" {
   name                = "${var.app_name}-blue"
   application         = aws_elastic_beanstalk_application.app.name
@@ -145,6 +146,44 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   depends_on = [
     aws_elastic_beanstalk_application_version.app_version
   ]
+
+
+  # Using the custom ALB for Blue environment
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerType"
+    value     = "external"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "SharedLoadBalancer"
+    value     = var.custom_alb_arn
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ListenerEnabled"
+    value     = "true"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ListenerProtocol"
+    value     = "HTTP"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ListenerPort"
+    value     = "80"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "TargetGroupArn"
+    value     = var.custom_blue_tg_arn
+  }
 
 
   setting {
@@ -247,8 +286,9 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "SecurityGroups"
-    value     = var.ec2_sg_id
+    value     =  var.ec2_sg_id
   }
+
 
   tags = {
     Name        = "Blue-Environment"
@@ -267,6 +307,43 @@ resource "aws_elastic_beanstalk_environment" "green" {
     aws_elastic_beanstalk_application_version.app_version
   ]
 
+    # Using the custom ALB for Green environment
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerType"
+    value     = "external"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "SharedLoadBalancer"
+    value     = var.custom_alb_arn
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ListenerEnabled"
+    value     = "true"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ListenerProtocol"
+    value     = "HTTP"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "ListenerPort"
+    value     = "80"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "TargetGroupArn"
+    value     = var.custom_green_tg_arn
+  }
+
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "ServiceRole"
@@ -345,6 +422,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = "5"
   }
 
+
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "InstanceType"
@@ -367,7 +445,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "SecurityGroups"
-    value     = var.ec2_sg_id
+    value = var.ec2_sg_id
   }
 
   tags = {
