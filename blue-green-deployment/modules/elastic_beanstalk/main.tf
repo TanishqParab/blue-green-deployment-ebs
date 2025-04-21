@@ -445,7 +445,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
   setting {
     namespace = "aws:autoscaling:launchconfiguration"
     name      = "SecurityGroups"
-    value = var.ec2_sg_id
+    value     = var.ec2_sg_id != null ? var.ec2_sg_id : module.security_group.ec2_sg_id
   }
 
   tags = {
