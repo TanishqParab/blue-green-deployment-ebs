@@ -6,6 +6,7 @@ variable "app_name" {
 variable "platform_arn" {
   description = "Elastic Beanstalk platform ARN to use (e.g., Python 3.8)"
   type        = string
+  default = null
 }
 
 variable "app_zip_path" {
@@ -47,6 +48,7 @@ variable "app_source_dir" {
 variable "s3_bucket" {
   description = "Name of the S3 bucket where application ZIP will be uploaded"
   type        = string
+  default = null
 }
 
 variable "blue_env_name" {
