@@ -6,7 +6,6 @@ variable "app_name" {
 variable "platform_arn" {
   description = "Elastic Beanstalk platform ARN to use (e.g., Python 3.8)"
   type        = string
-  default = null
 }
 
 variable "app_zip_path" {
