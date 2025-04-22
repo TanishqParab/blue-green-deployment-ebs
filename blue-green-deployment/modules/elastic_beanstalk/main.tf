@@ -161,9 +161,9 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "LoadBalancerName"
-    value     = "blue-green-alb"
+    namespace = "aws:elbv2:loadbalancer"
+    name      = "SharedLoadBalancer"
+    value     = "blue-green-alb"  # <- This should match the name of your ALB
   }
 
   setting {
@@ -187,9 +187,8 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "TargetGroupArn"
-    value     = var.custom_blue_tg_arn
+    value     = aws_lb_target_group.blue.arn  # Dynamically reference the ARN
   }
-
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
@@ -323,10 +322,11 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "LoadBalancerName"
-    value     = "blue-green-alb"
+    namespace = "aws:elbv2:loadbalancer"
+    name      = "SharedLoadBalancer"
+    value     = "blue-green-alb"  # <- This should match the name of your ALB
   }
+
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
@@ -349,7 +349,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "TargetGroupArn"
-    value     = var.custom_green_tg_arn
+    value     = aws_lb_target_group.green.arn  # Dynamically reference the ARN
   }
 
   setting {
