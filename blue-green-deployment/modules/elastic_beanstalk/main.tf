@@ -166,23 +166,6 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = var.custom_alb_arn
   }
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "ListenerEnabled"
-    value     = "true"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "ListenerProtocol"
-    value     = "HTTP"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "ListenerPort"
-    value     = "80"
-  }
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
@@ -327,23 +310,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = var.custom_alb_arn
   }
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "ListenerEnabled"
-    value     = "true"
-  }
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "ListenerProtocol"
-    value     = "HTTP"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "ListenerPort"
-    value     = "80"
-  }
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
