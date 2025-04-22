@@ -6,6 +6,7 @@ variable "app_name" {
 variable "platform_arn" {
   description = "Elastic Beanstalk platform ARN to use (e.g., Python 3.8)"
   type        = string
+  default = null
 }
 
 variable "app_zip_path" {
@@ -47,16 +48,19 @@ variable "app_source_dir" {
 variable "s3_bucket" {
   description = "Name of the S3 bucket where application ZIP will be uploaded"
   type        = string
+  default = null
 }
 
 variable "blue_env_name" {
   description = "Elastic Beanstalk environment name for the Blue deployment"
   type        = string
+  default = null
 }
 
 variable "green_env_name" {
   description = "Elastic Beanstalk environment name for the Green deployment"
   type        = string
+  default = null
 }
 
 variable "env_settings" {
@@ -84,6 +88,7 @@ variable "rolling_update_enabled" {
 variable "iam_service_role_arn" {
   description = "IAM service role ARN for Elastic Beanstalk environments"
   type        = string
+  default = null
 }
 
 variable "cname_prefix_blue" {
