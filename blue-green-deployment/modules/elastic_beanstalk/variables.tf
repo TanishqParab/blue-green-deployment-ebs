@@ -47,7 +47,6 @@ variable "app_source_dir" {
 variable "s3_bucket" {
   description = "Name of the S3 bucket where application ZIP will be uploaded"
   type        = string
-  default = null
 }
 
 variable "blue_env_name" {
