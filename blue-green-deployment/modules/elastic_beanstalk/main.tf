@@ -90,6 +90,11 @@ resource "aws_iam_role_policy_attachment" "beanstalk_ec2_worker" {
   policy_arn = "arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier"
 }
 
+resource "aws_iam_role_policy_attachment" "alb_access" {
+  role       = aws_iam_role.beanstalk_ec2.name
+  policy_arn = "arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
+}
+
 resource "aws_elastic_beanstalk_application" "app" {
   name        = var.app_name
   description = "Elastic Beanstalk application for Blue-Green deployment"
