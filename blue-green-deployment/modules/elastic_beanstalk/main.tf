@@ -129,6 +129,13 @@ resource "aws_s3_object" "app_zip" {
   content_type = "application/zip"
 }
 
+# Declaring the ALB module
+module "alb" {
+  source = "../path_to_alb_module"  # Correct path to the ALB module
+  vpc_id = var.vpc_id  # Pass any required variables like VPC ID
+  # Add other necessary variables that the ALB module requires
+}
+
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
   application = aws_elastic_beanstalk_application.app.name
@@ -161,9 +168,9 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace = "aws:elbv2:loadbalancer"
-    name      = "SharedLoadBalancer"
-    value     = "blue-green-alb"  # <- This should match the name of your ALB
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerArn"
+    value     = var.custom_alb_arn
   }
 
   setting {
@@ -185,9 +192,9 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace  = "aws:elasticbeanstalk:environment"
-    option_name = "TargetGroupARN"
-    value       = module.alb.blue_target_group_arn # Referencing output for Blue Target Group ARN
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "TargetGroupArn"
+    value     = var.custom_blue_tg_arn
   }
 
   setting {
@@ -322,11 +329,10 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   setting {
-    namespace = "aws:elbv2:loadbalancer"
-    name      = "SharedLoadBalancer"
-    value     = "blue-green-alb"  # <- This should match the name of your ALB
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerArn"
+    value     = var.custom_alb_arn
   }
-
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
@@ -347,9 +353,9 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   setting {
-    namespace  = "aws:elasticbeanstalk:environment"
-    option_name = "TargetGroupARN"
-    value       = module.alb.green_target_group_arn # Referencing output for Green Target Group ARN
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "TargetGroupArn"
+    value     = var.custom_green_tg_arn
   }
 
   setting {
