@@ -185,9 +185,9 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "TargetGroupArn"
-    value     = aws_lb_target_group.blue.arn  # Dynamically reference the ARN
+    namespace  = "aws:elasticbeanstalk:environment"
+    option_name = "TargetGroupARN"
+    value       = module.alb.blue_target_group_arn  # Referencing output for Blue Target Group ARN
   }
 
   setting {
@@ -347,9 +347,9 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "TargetGroupArn"
-    value     = aws_lb_target_group.green.arn  # Dynamically reference the ARN
+    namespace  = "aws:elasticbeanstalk:environment"
+    option_name = "TargetGroupARN"
+    value       = module.alb.green_target_group_arn  # Referencing output for Green Target Group ARN
   }
 
   setting {
