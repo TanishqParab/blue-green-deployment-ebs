@@ -168,9 +168,9 @@ resource "aws_elastic_beanstalk_environment" "blue" {
 
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "CustomTargetGroupArn"
-    value     = var.custom_blue_tg_arn
+    namespace  = "aws:elasticbeanstalk:environment:process:default"
+    name       = "TargetGroupArn"
+    value      = var.custom_blue_tg_arn
   }
 
   setting {
@@ -313,9 +313,9 @@ resource "aws_elastic_beanstalk_environment" "green" {
 
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "CustomTargetGroupArn"
-    value     = var.custom_green_tg_arn
+    namespace  = "aws:elasticbeanstalk:environment:process:default"
+    name       = "TargetGroupArn"
+    value      = var.custom_green_tg_arn
   }
 
   setting {
