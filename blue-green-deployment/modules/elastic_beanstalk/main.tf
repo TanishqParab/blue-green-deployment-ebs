@@ -129,13 +129,6 @@ resource "aws_s3_object" "app_zip" {
   content_type = "application/zip"
 }
 
-# Declaring the ALB module
-module "alb" {
-  source = "../path_to_alb_module"  # Correct path to the ALB module
-  vpc_id = var.vpc_id  # Pass any required variables like VPC ID
-  # Add other necessary variables that the ALB module requires
-}
-
 resource "aws_elastic_beanstalk_application_version" "app_version" {
   name        = var.version_label
   application = aws_elastic_beanstalk_application.app.name
