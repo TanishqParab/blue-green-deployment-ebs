@@ -160,12 +160,6 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "external"
   }
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "CustomLoadBalancer"
-    value     = var.custom_alb_arn
-  }
-
 
   setting {
     namespace  = "aws:elasticbeanstalk:environment:process:default"
@@ -303,13 +297,6 @@ resource "aws_elastic_beanstalk_environment" "green" {
     name      = "LoadBalancerType"
     value     = "external"
   }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "CustomLoadBalancer"
-    value     = var.custom_alb_arn
-  }
-
 
 
   setting {
