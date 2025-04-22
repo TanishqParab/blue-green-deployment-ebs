@@ -162,7 +162,7 @@ resource "aws_elastic_beanstalk_environment" "blue" {
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
-    name      = "LoadBalancerArn"
+    name      = "CustomLoadBalancer"
     value     = var.custom_alb_arn
   }
 
@@ -306,7 +306,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
-    name      = "LoadBalancerArn"
+    name      = "CustomLoadBalancer"
     value     = var.custom_alb_arn
   }
 
