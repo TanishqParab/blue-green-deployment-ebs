@@ -162,8 +162,8 @@ resource "aws_elastic_beanstalk_environment" "blue" {
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
-    name      = "SharedLoadBalancer"
-    value     = var.custom_alb_arn
+    name      = "LoadBalancerName"
+    value     = "blue-green-alb"
   }
 
   setting {
@@ -324,8 +324,8 @@ resource "aws_elastic_beanstalk_environment" "green" {
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
-    name      = "SharedLoadBalancer"
-    value     = var.custom_alb_arn
+    name      = "LoadBalancerName"
+    value     = "blue-green-alb"
   }
 
   setting {
