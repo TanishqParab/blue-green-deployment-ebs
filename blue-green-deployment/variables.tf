@@ -230,3 +230,9 @@ variable "custom_green_tg_arn" {
   type        = string
   default = null
 }
+
+variable "alb_name" {
+  description = "The name of the Application Load Balancer"
+  type        = string
+  default     = "blue-green-alb"  # You can set a default value or leave it empty to make it required
+}
