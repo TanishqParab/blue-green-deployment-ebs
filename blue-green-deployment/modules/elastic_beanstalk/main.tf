@@ -161,10 +161,30 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace  = "aws:elasticbeanstalk:environment:loadbalancer"
-    name       = "TargetGroupArn"
-    value      = var.custom_blue_tg_arn
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerIsShared"
+    value     = "true"
   }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
+    name      = "SharedLoadBalancer"
+    value     = var.custom_alb_arn  # Your ALB's ARN
+  }
+
+  # Port configuration
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:process:default"
+    name      = "Port"
+    value     = "5000"  # App port
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:process:default"
+    name      = "ListenerPort"
+    value     = "80"  # ALB listener port
+  }
+
 
   setting {
     namespace = "aws:elasticbeanstalk:environment"
@@ -298,9 +318,28 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   setting {
-    namespace  = "aws:elasticbeanstalk:environment:loadbalancer"
-    name       = "TargetGroupArn"
-    value      = var.custom_green_tg_arn
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerIsShared"
+    value     = "true"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
+    name      = "SharedLoadBalancer"
+    value     = var.custom_alb_arn  # Your ALB's ARN
+  }
+
+  # Port configuration
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:process:default"
+    name      = "Port"
+    value     = "5000"  # App port
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:process:default"
+    name      = "ListenerPort"
+    value     = "80"  # ALB listener port
   }
 
   setting {
