@@ -161,14 +161,7 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
-    name      = "LoadBalancerName"
-    value     =  var.alb_name # Reference to your ALB's name
-  }
-
-
-  setting {
-    namespace  = "aws:elasticbeanstalk:environment:process:default"
+    namespace  = "aws:elbv2:listener:default"
     name       = "TargetGroupArn"
     value      = var.custom_blue_tg_arn
   }
@@ -305,13 +298,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
   }
 
   setting {
-    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
-    name      = "LoadBalancerName"
-    value     = var.alb_name  # Reference to your ALB's name
-  }
-
-  setting {
-    namespace  = "aws:elasticbeanstalk:environment:process:default"
+    namespace  = "aws:elbv2:listener:default"
     name       = "TargetGroupArn"
     value      = var.custom_green_tg_arn
   }
