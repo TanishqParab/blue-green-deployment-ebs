@@ -150,6 +150,7 @@ resource "aws_elastic_beanstalk_environment" "blue" {
 
   depends_on = [
     aws_elastic_beanstalk_application_version.app_version
+    aws_security_group.ec2_sg 
   ]
 
 
@@ -289,6 +290,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
 
   depends_on = [
     aws_elastic_beanstalk_application_version.app_version
+    aws_security_group.ec2_sg 
   ]
 
     # Using the custom ALB for Green environment
