@@ -149,7 +149,7 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   cname_prefix        = var.cname_prefix_blue
 
   depends_on = [
-    aws_elastic_beanstalk_application_version.app_version
+    aws_elastic_beanstalk_application_version.app_version,
     aws_security_group.ec2_sg 
   ]
 
@@ -289,7 +289,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
   cname_prefix        = var.cname_prefix_green
 
   depends_on = [
-    aws_elastic_beanstalk_application_version.app_version
+    aws_elastic_beanstalk_application_version.app_version,
     aws_security_group.ec2_sg 
   ]
 
