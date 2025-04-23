@@ -149,8 +149,7 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   cname_prefix        = var.cname_prefix_blue
 
   depends_on = [
-    aws_elastic_beanstalk_application_version.app_version,
-    aws_security_group.ec2_sg 
+    aws_elastic_beanstalk_application_version.app_version
   ]
 
 
@@ -289,8 +288,7 @@ resource "aws_elastic_beanstalk_environment" "green" {
   cname_prefix        = var.cname_prefix_green
 
   depends_on = [
-    aws_elastic_beanstalk_application_version.app_version,
-    aws_security_group.ec2_sg 
+    aws_elastic_beanstalk_application_version.app_version
   ]
 
     # Using the custom ALB for Green environment
