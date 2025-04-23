@@ -1,5 +1,5 @@
 resource "aws_lb" "main" {
-  name               = "blue-green-alb"
+  name               = var.alb_name
   internal           = false
   load_balancer_type = "application"
   security_groups    = var.ec2_sg_id != null ? [var.ec2_sg_id] : []
