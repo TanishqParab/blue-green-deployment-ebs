@@ -160,6 +160,15 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "application"
   }
 
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
+    name      = "LoadBalancer"
+    value     = var.custom_alb_arn
+  }
+
+
+
+
   # Port configuration
   setting {
     namespace = "aws:elasticbeanstalk:environment:process:default"
@@ -303,6 +312,12 @@ resource "aws_elastic_beanstalk_environment" "green" {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "LoadBalancerType"
     value     = "application"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
+    name      = "LoadBalancer"
+    value     = var.custom_alb_arn
   }
 
 
