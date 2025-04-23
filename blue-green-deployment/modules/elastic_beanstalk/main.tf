@@ -160,18 +160,6 @@ resource "aws_elastic_beanstalk_environment" "blue" {
     value     = "application"
   }
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "LoadBalancerIsShared"
-    value     = "true"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
-    name      = "SharedLoadBalancer"
-    value     = var.custom_alb_arn  # Your ALB's ARN
-  }
-
   # Port configuration
   setting {
     namespace = "aws:elasticbeanstalk:environment:process:default"
@@ -317,17 +305,6 @@ resource "aws_elastic_beanstalk_environment" "green" {
     value     = "application"
   }
 
-  setting {
-    namespace = "aws:elasticbeanstalk:environment"
-    name      = "LoadBalancerIsShared"
-    value     = "true"
-  }
-
-  setting {
-    namespace = "aws:elasticbeanstalk:environment:loadbalancer"
-    name      = "SharedLoadBalancer"
-    value     = var.custom_alb_arn  # Your ALB's ARN
-  }
 
   # Port configuration
   setting {
