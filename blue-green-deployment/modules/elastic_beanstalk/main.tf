@@ -149,7 +149,6 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   cname_prefix        = var.cname_prefix_blue
 
   depends_on = [
-    module.security_group,                          # Ensure the security group is created before the environment
     aws_elastic_beanstalk_application_version.app_version  # Ensure the application version is available before the environment
   ]
 
@@ -289,7 +288,6 @@ resource "aws_elastic_beanstalk_environment" "green" {
   cname_prefix        = var.cname_prefix_green
 
   depends_on = [
-    module.security_group,                          # Ensure the security group is created before the environment
     aws_elastic_beanstalk_application_version.app_version  # Ensure the application version is available before the environment
   ]
 
