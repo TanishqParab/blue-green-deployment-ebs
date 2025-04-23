@@ -55,6 +55,8 @@ module "elastic_beanstalk" {
   custom_alb_arn    = var.custom_alb_arn != null ? var.custom_alb_arn : module.alb.alb_arn
   custom_blue_tg_arn = var.custom_blue_tg_arn != null ? var.custom_blue_tg_arn : module.alb.blue_target_group_arn
   custom_green_tg_arn = var.custom_green_tg_arn != null ? var.custom_green_tg_arn : module.alb.green_target_group_arn
+  
+  depends_on = [module.security_group] # ✅ Declare dependency in root module
 }
 
 
