@@ -157,7 +157,13 @@ resource "aws_elastic_beanstalk_environment" "blue" {
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "LoadBalancerType"
-    value     = "external"
+    value     = "application"
+  }
+
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerName"
+    value     = aws_lb.main.name  # Reference to your ALB's name
   }
 
 
@@ -295,9 +301,14 @@ resource "aws_elastic_beanstalk_environment" "green" {
   setting {
     namespace = "aws:elasticbeanstalk:environment"
     name      = "LoadBalancerType"
-    value     = "external"
+    value     = "application"
   }
 
+  setting {
+    namespace = "aws:elasticbeanstalk:environment"
+    name      = "LoadBalancerName"
+    value     = aws_lb.main.name  # Reference to your ALB's name
+  }
 
   setting {
     namespace  = "aws:elasticbeanstalk:environment:process:default"
