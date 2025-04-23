@@ -27,6 +27,7 @@ module "alb" {
   health_check_timeout = var.health_check_timeout
   healthy_threshold   = var.healthy_threshold
   unhealthy_threshold = var.unhealthy_threshold
+  alb_name = var.alb_name
 }
 
 
@@ -55,6 +56,7 @@ module "elastic_beanstalk" {
   custom_alb_arn    = var.custom_alb_arn != null ? var.custom_alb_arn : module.alb.alb_arn
   custom_blue_tg_arn = var.custom_blue_tg_arn != null ? var.custom_blue_tg_arn : module.alb.blue_target_group_arn
   custom_green_tg_arn = var.custom_green_tg_arn != null ? var.custom_green_tg_arn : module.alb.green_target_group_arn
+  alb_name = var.alb_name
   
   depends_on = [module.security_group] # ✅ Declare dependency in root module
 }
