@@ -1,6 +1,7 @@
 // ec2-pipeline.groovy - Unified EC2 pipeline for apply, switch, and rollback operations
 
-@Library('jenkins-shared-library') _
+@Library('jenkins-shared-library-temp') _
+
 
 pipeline {
     agent any
