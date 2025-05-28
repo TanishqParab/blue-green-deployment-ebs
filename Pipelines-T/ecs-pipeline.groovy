@@ -2,7 +2,6 @@
 
 @Library('jenkins-shared-library-temp') _
 
-
 pipeline {
     agent any
     
@@ -42,7 +41,7 @@ pipeline {
         EMAIL_RECIPIENT = 'tanishqparab2001@gmail.com'
         REPO_URL = 'https://github.com/TanishqParab/blue-green-deployment-ecs-test'
         REPO_BRANCH = 'main'
-        TF_WORKING_DIR = '/var/lib/jenkins/workspace/blue-green-deployment-ptest-ecs/blue-green-deployment'
+        TF_WORKING_DIR = '/var/lib/jenkins/workspace/ECS-Unified-Pipeline/blue-green-deployment'
     }
     
     stages {
@@ -60,6 +59,11 @@ pipeline {
                     
                     // Store the operation for later stages
                     env.SELECTED_OPERATION = operation
+                    
+                    // Force implementation to be 'ecs'
+                    env.IMPLEMENTATION = 'ecs'
+                    env.SELECTED_IMPLEMENTATION = 'ecs'
+                    echo "DEBUG: Forced implementation to ECS"
                 }
             }
         }
@@ -70,9 +74,14 @@ pipeline {
             }
             steps {
                 script {
-                    // Create config map
+                    // Force implementation to be 'ecs' again
+                    env.IMPLEMENTATION = 'ecs'
+                    env.SELECTED_IMPLEMENTATION = 'ecs'
+                    echo "DEBUG: Environment variables - IMPLEMENTATION: ${env.IMPLEMENTATION}, SELECTED_IMPLEMENTATION: ${env.SELECTED_IMPLEMENTATION}"
+                    
+                    // Create config map with hardcoded implementation
                     def config = [
-                        implementation: env.IMPLEMENTATION,
+                        implementation: 'ecs', // Hardcoded to 'ecs'
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
@@ -86,11 +95,16 @@ pipeline {
                         repoBranch: env.REPO_BRANCH
                     ]
                     
+                    echo "DEBUG: Config implementation: ${config.implementation}"
+                    
                     // Call the base pipeline implementation
                     basePipelineImpl.initialize(config)
                     basePipelineImpl.checkout(config)
                     
                     if (env.EXECUTION_TYPE == 'FULL_DEPLOY' || env.EXECUTION_TYPE == 'MANUAL_APPLY') {
+                        echo "DEBUG: Before terraform - Implementation: ${config.implementation}"
+                        // Force implementation again before terraform
+                        config.implementation = 'ecs'
                         terraformInit(config)
                         terraformPlan(config)
                         approvals.terraformApplyApproval(config)
@@ -112,9 +126,9 @@ pipeline {
             }
             steps {
                 script {
-                    // Create config map
+                    // Create config map with hardcoded implementation
                     def config = [
-                        implementation: env.IMPLEMENTATION,
+                        implementation: 'ecs', // Hardcoded to 'ecs'
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
@@ -152,9 +166,9 @@ pipeline {
             }
             steps {
                 script {
-                    // Create config map
+                    // Create config map with hardcoded implementation
                     def config = [
-                        implementation: env.IMPLEMENTATION,
+                        implementation: 'ecs', // Hardcoded to 'ecs'
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
