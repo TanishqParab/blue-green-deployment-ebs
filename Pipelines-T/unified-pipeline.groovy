@@ -2,15 +2,14 @@
 
 @Library('jenkins-shared-library-temp') _
 
-
 pipeline {
     agent any
     
     parameters {
         choice(
             name: 'IMPLEMENTATION',
-            choices: ['EC2', 'ECS'],
-            description: 'Select the implementation type: EC2 or ECS'
+            choices: ['ECS', 'EC2'],
+            description: 'Select the implementation type: ECS or EC2'
         )
         choice(
             name: 'OPERATION',
@@ -56,7 +55,7 @@ pipeline {
                     
                     // Store the operation and implementation for later stages
                     env.SELECTED_OPERATION = operation
-                    env.SELECTED_IMPLEMENTATION = params.IMPLEMENTATION?.toLowerCase() ?: 'ec2'
+                    env.SELECTED_IMPLEMENTATION = params.IMPLEMENTATION?.toLowerCase() ?: 'ecs'
                     
                     // Set implementation-specific working directory
                     if (env.SELECTED_IMPLEMENTATION == 'ec2') {
