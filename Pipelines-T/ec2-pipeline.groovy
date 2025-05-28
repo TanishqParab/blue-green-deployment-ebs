@@ -123,11 +123,8 @@ pipeline {
                         
                         approvals.terraformApplyApproval(config)
                         
-                        // Use correct variable format for Terraform apply
-                        dir(config.tfWorkingDir) {
-                            sh "terraform apply -auto-approve tfplan"
-                            archiveArtifacts artifacts: 'terraform.tfstate', fingerprint: true
-                        }
+                        // Use terraformApply instead of direct shell command to ensure EC2 setup steps are executed
+                        terraformApply(config)
                     }
                     
                     if (params.MANUAL_BUILD != 'DESTROY') {
@@ -202,6 +199,8 @@ pipeline {
                     rollbackPipelineImpl.fetchResources(config)
                     rollbackPipelineImpl.manualApprovalBeforeRollbackEC2(config)
                     rollbackPipelineImpl.prepareRollback(config)
+                    rollbackPipelineImpl.executeRollback(config)
+                    rollbackPipelineImpl.postRollbackActions(config)ineImpl.prepareRollback(config)
                     rollbackPipelineImpl.executeRollback(config)
                     rollbackPipelineImpl.postRollbackActions(config)
                 }
