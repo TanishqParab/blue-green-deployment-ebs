@@ -2,7 +2,6 @@
 
 @Library('jenkins-shared-library-temp') _
 
-
 pipeline {
     agent any
     
@@ -39,7 +38,7 @@ pipeline {
         EMAIL_RECIPIENT = 'tanishqparab2001@gmail.com'
         REPO_URL = 'https://github.com/TanishqParab/blue-green-deployment-ecs-test'
         REPO_BRANCH = 'main'
-        TF_WORKING_DIR = '/var/lib/jenkins/workspace/blue-green-deployment-ptest-ec2/blue-green-deployment'
+        TF_WORKING_DIR = '/var/lib/jenkins/workspace/EC2-Unified-Pipeline/blue-green-deployment'
     }
     
     stages {
@@ -48,7 +47,20 @@ pipeline {
                 script {
                     // Determine operation - if triggered by GitHub push, use SWITCH
                     def operation = params.OPERATION ?: 'APPLY'  // Default to APPLY if null
-                    if (currentBuild.getBuildCauses('hudson.triggers.SCMTrigger$SCMTriggerCause').size() > 0) {
+                    
+                    // Check for GitHub push trigger using multiple possible cause classes
+                    def isGitHubPush = false
+                    def causes = currentBuild.getBuildCauses()
+                    causes.each { cause ->
+                        if (cause._class?.contains('SCMTrigger') || 
+                            cause._class?.contains('GitHubPush') || 
+                            cause.shortDescription?.contains('push') ||
+                            cause.shortDescription?.contains('SCM')) {
+                            isGitHubPush = true
+                        }
+                    }
+                    
+                    if (isGitHubPush) {
                         echo "Build triggered by GitHub push - automatically using SWITCH operation"
                         operation = 'SWITCH'
                     } else {
@@ -57,6 +69,11 @@ pipeline {
                     
                     // Store the operation for later stages
                     env.SELECTED_OPERATION = operation
+                    
+                    // Force implementation to be 'ec2'
+                    env.IMPLEMENTATION = 'ec2'
+                    env.SELECTED_IMPLEMENTATION = 'ec2'
+                    echo "DEBUG: Forced implementation to EC2"
                 }
             }
         }
@@ -67,9 +84,14 @@ pipeline {
             }
             steps {
                 script {
-                    // Create config map
+                    // Force implementation to be 'ec2' again
+                    env.IMPLEMENTATION = 'ec2'
+                    env.SELECTED_IMPLEMENTATION = 'ec2'
+                    echo "DEBUG: Environment variables - IMPLEMENTATION: ${env.IMPLEMENTATION}, SELECTED_IMPLEMENTATION: ${env.SELECTED_IMPLEMENTATION}"
+                    
+                    // Create config map with hardcoded implementation
                     def config = [
-                        implementation: env.IMPLEMENTATION,
+                        implementation: 'ec2', // Hardcoded to 'ec2'
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
@@ -80,15 +102,31 @@ pipeline {
                         repoBranch: env.REPO_BRANCH
                     ]
                     
+                    echo "DEBUG: Config implementation: ${config.implementation}"
+                    
                     // Call the base pipeline implementation
                     basePipelineImpl.initialize(config)
                     basePipelineImpl.checkout(config)
                     
                     if (env.EXECUTION_TYPE == 'FULL_DEPLOY' || env.EXECUTION_TYPE == 'MANUAL_APPLY') {
+                        echo "DEBUG: Before terraform - Implementation: ${config.implementation}"
+                        // Force implementation again before terraform
+                        config.implementation = 'ec2'
+                        // Fix Terraform variable format
+                        echo "DEBUG: Fixing Terraform variable format"
                         terraformInit(config)
-                        terraformPlan(config)
+                        
+                        // Use correct variable format for Terraform plan
+                        dir(config.tfWorkingDir) {
+                            sh "terraform plan -out=tfplan"
+                        }
+                        
                         approvals.terraformApplyApproval(config)
-                        terraformApply(config)
+                        
+                        // Use correct variable format for Terraform apply
+                        dir(config.tfWorkingDir) {
+                            sh "terraform apply -auto-approve tfplan"
+                        }
                     }
                     
                     if (params.MANUAL_BUILD != 'DESTROY') {
@@ -109,9 +147,9 @@ pipeline {
             }
             steps {
                 script {
-                    // Create config map
+                    // Create config map with hardcoded implementation
                     def config = [
-                        implementation: env.IMPLEMENTATION,
+                        implementation: 'ec2', // Hardcoded to 'ec2'
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
@@ -145,9 +183,9 @@ pipeline {
             }
             steps {
                 script {
-                    // Create config map
+                    // Create config map with hardcoded implementation
                     def config = [
-                        implementation: env.IMPLEMENTATION,
+                        implementation: 'ec2', // Hardcoded to 'ec2'
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
