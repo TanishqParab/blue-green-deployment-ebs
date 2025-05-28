@@ -50,7 +50,20 @@ pipeline {
                 script {
                     // Determine operation - if triggered by GitHub push, use SWITCH
                     def operation = params.OPERATION ?: 'APPLY'  // Default to APPLY if null
-                    if (currentBuild.getBuildCauses('hudson.triggers.SCMTrigger$SCMTriggerCause').size() > 0) {
+                    
+                    // Check for GitHub push trigger using multiple possible cause classes
+                    def isGitHubPush = false
+                    def causes = currentBuild.getBuildCauses()
+                    causes.each { cause ->
+                        if (cause._class?.contains('SCMTrigger') || 
+                            cause._class?.contains('GitHubPush') || 
+                            cause.shortDescription?.contains('push') ||
+                            cause.shortDescription?.contains('SCM')) {
+                            isGitHubPush = true
+                        }
+                    }
+                    
+                    if (isGitHubPush) {
                         echo "Build triggered by GitHub push - automatically using SWITCH operation"
                         operation = 'SWITCH'
                     } else {
@@ -105,10 +118,21 @@ pipeline {
                         echo "DEBUG: Before terraform - Implementation: ${config.implementation}"
                         // Force implementation again before terraform
                         config.implementation = 'ecs'
+                        // Fix Terraform variable format
+                        echo "DEBUG: Fixing Terraform variable format"
                         terraformInit(config)
-                        terraformPlan(config)
+                        
+                        // Use correct variable format for Terraform plan
+                        dir(config.tfWorkingDir) {
+                            sh "terraform plan -out=tfplan"
+                        }
+                        
                         approvals.terraformApplyApproval(config)
-                        terraformApply(config)
+                        
+                        // Use correct variable format for Terraform apply
+                        dir(config.tfWorkingDir) {
+                            sh "terraform apply -auto-approve tfplan"
+                        }
                     }
                     
                     if (params.MANUAL_BUILD == 'DESTROY') {
