@@ -126,6 +126,7 @@ pipeline {
                         // Use correct variable format for Terraform apply
                         dir(config.tfWorkingDir) {
                             sh "terraform apply -auto-approve tfplan"
+                            archiveArtifacts artifacts: 'terraform.tfstate', fingerprint: true
                         }
                     }
                     
