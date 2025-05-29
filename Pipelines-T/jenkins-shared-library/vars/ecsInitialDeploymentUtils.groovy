@@ -22,20 +22,37 @@ def deployToBlueService(Map config) {
         docker push ${ecrUri}:latest
         """
         
-        // Get blue service and task definition
-        def blueService = sh(
-            script: "aws ecs list-services --cluster blue-green-cluster --region ${config.awsRegion} --output json | jq -r '.serviceArns[] | select(contains(\"blue\"))' | cut -d'/' -f3",
+        // Get services JSON and find blue service
+        def servicesJson = sh(
+            script: "aws ecs list-services --cluster blue-green-cluster --region ${config.awsRegion} --output json",
             returnStdout: true
         ).trim()
         
+        def serviceArns = initialDeploymentParseJson(servicesJson).serviceArns
+        def blueServiceArn = serviceArns.find { it.toLowerCase().contains("blue") }
+        
+        if (!blueServiceArn) {
+            error "❌ Could not find blue service in cluster blue-green-cluster"
+        }
+        
+        def blueService = blueServiceArn.tokenize('/').last()
+        echo "Found blue service: ${blueService}"
+        
+        // Get task definition ARN
         def taskDefArn = sh(
-            script: "aws ecs describe-services --cluster blue-green-cluster --services ${blueService} --region ${config.awsRegion} --query 'services[0].taskDefinition' --output text",
+            script: """
+            aws ecs describe-services --cluster blue-green-cluster --services "${blueService}" --region ${config.awsRegion} --query 'services[0].taskDefinition' --output text
+            """,
             returnStdout: true
         ).trim()
+        
+        echo "Found task definition ARN: ${taskDefArn}"
         
         // Get task definition JSON
         def taskDefJsonText = sh(
-            script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${config.awsRegion} --query 'taskDefinition' --output json",
+            script: """
+            aws ecs describe-task-definition --task-definition "${taskDefArn}" --region ${config.awsRegion} --query 'taskDefinition' --output json
+            """,
             returnStdout: true
         ).trim()
         
@@ -48,12 +65,14 @@ def deployToBlueService(Map config) {
             returnStdout: true
         ).trim()
         
+        echo "Registered new task definition: ${newTaskDefArn}"
+        
         // Update service with new task definition
         sh """
         aws ecs update-service \\
             --cluster blue-green-cluster \\
-            --service ${blueService} \\
-            --task-definition ${newTaskDefArn} \\
+            --service "${blueService}" \\
+            --task-definition "${newTaskDefArn}" \\
             --desired-count 1 \\
             --force-new-deployment \\
             --region ${config.awsRegion}
@@ -71,7 +90,7 @@ def deployToBlueService(Map config) {
         """
         
         // Wait for service to stabilize
-        sh "aws ecs wait services-stable --cluster blue-green-cluster --services ${blueService} --region ${config.awsRegion}"
+        sh "aws ecs wait services-stable --cluster blue-green-cluster --services \"${blueService}\" --region ${config.awsRegion}"
         
         echo "✅ Initial deployment completed successfully! Application is now accessible through the ALB."
     } catch (Exception e) {
