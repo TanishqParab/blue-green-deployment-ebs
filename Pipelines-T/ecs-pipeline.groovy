@@ -17,6 +17,14 @@ pipeline {
             choices: ['YES', 'DESTROY', 'NO'], 
             description: 'YES: Run Terraform, DESTROY: Destroy Infra, NO: Auto Deploy App Changes'
         )
+
+        // Add parameter for initial deployment
+        choice(
+            name: 'INITIAL_DEPLOYMENT',
+            choices: ['NO', 'YES'],
+            description: 'YES: Deploy initial application to Blue service after infrastructure is created'
+        )
+
         choice(
             name: 'CONFIRM_ROLLBACK',
             choices: ['NO', 'YES'],
@@ -144,6 +152,40 @@ pipeline {
                 }
             }
         }
+
+
+        // Add new stage for initial deployment
+        stage('Execute Initial Deployment') {
+            when {
+                allOf {
+                    expression { env.SELECTED_OPERATION == 'APPLY' }
+                    expression { params.INITIAL_DEPLOYMENT == 'YES' }
+                    expression { params.MANUAL_BUILD != 'DESTROY' }
+                }
+            }
+            steps {
+                script {
+                    // Create config map with hardcoded implementation
+                    def config = [
+                        implementation: 'ecs',
+                        awsRegion: env.AWS_REGION,
+                        awsCredentialsId: env.AWS_CREDENTIALS_ID,
+                        tfWorkingDir: env.TF_WORKING_DIR,
+                        ecrRepoName: env.ECR_REPO_NAME,
+                        containerName: env.CONTAINER_NAME,
+                        containerPort: env.CONTAINER_PORT,
+                        dockerfile: env.DOCKERFILE,
+                        appFile: env.APP_FILE,
+                        emailRecipient: env.EMAIL_RECIPIENT,
+                        repoUrl: env.REPO_URL,
+                        repoBranch: env.REPO_BRANCH
+                    ]
+                    
+                    echo "🚀 Executing initial deployment for ECS..."
+                    ecsInitialDeploymentImpl.deployInitialApplication(config)
+                }
+            }
+        }
         
         stage('Execute Switch') {
             when {
@@ -153,7 +195,7 @@ pipeline {
                 script {
                     // Create config map with hardcoded implementation
                     def config = [
-                        implementation: 'ecs', // Hardcoded to 'ecs'
+                        implementation: 'ecs', 
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
@@ -193,7 +235,7 @@ pipeline {
                 script {
                     // Create config map with hardcoded implementation
                     def config = [
-                        implementation: 'ecs', // Hardcoded to 'ecs'
+                        implementation: 'ecs', 
                         awsRegion: env.AWS_REGION,
                         awsCredentialsId: env.AWS_CREDENTIALS_ID,
                         tfWorkingDir: env.TF_WORKING_DIR,
