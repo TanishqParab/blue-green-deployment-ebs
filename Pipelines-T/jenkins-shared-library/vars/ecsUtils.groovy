@@ -159,14 +159,19 @@ def fetchResources(Map config) {
 
         def targetGroups = parseJsonString(targetGroupsJson)
 
+        // --- Improved Environment Detection Logic ---
+        // Find the target group with the highest weight (>0)
         def liveTgArn = null
+        def maxWeight = 0
         if (targetGroups) {
             targetGroups.each { tg ->
-                if (tg.Weight > 0) {
+                if (tg.Weight > maxWeight) {
+                    maxWeight = tg.Weight
                     liveTgArn = tg.TargetGroupArn
                 }
             }
         }
+        // Fallback: If all weights are zero, pick the first TG
         if (liveTgArn == null && targetGroups?.size() > 0) {
             liveTgArn = targetGroups[0].TargetGroupArn
         }
@@ -595,32 +600,15 @@ def testEnvironment(Map config) {
 
 import groovy.json.JsonOutput
 
-def switchTrafficToTargetEnv(String targetEnv) {
+def switchTrafficToTargetEnv(String targetEnv, String blueTgArn, String greenTgArn, String listenerArn) {
     echo "🔄 Switching traffic to ${targetEnv}..."
 
-    def blueTgArn = sh(
-        script: "aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
-        returnStdout: true
-    ).trim()
-    def greenTgArn = sh(
-        script: "aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
-        returnStdout: true
-    ).trim()
-    def albArn = sh(
-        script: "aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text",
-        returnStdout: true
-    ).trim()
-    def listenerArn = sh(
-        script: "aws elbv2 describe-listeners --load-balancer-arn ${albArn} --query 'Listeners[0].ListenerArn' --output text",
-        returnStdout: true
-    ).trim()
-
     def targetArn = (targetEnv == "GREEN") ? greenTgArn : blueTgArn
-    def otherArn = (targetEnv == "GREEN") ? blueTgArn : greenTgArn
+    def otherArn  = (targetEnv == "GREEN") ? blueTgArn  : greenTgArn
 
     def targetGroups = [
         [TargetGroupArn: targetArn, Weight: 1],
-        [TargetGroupArn: otherArn, Weight: 0]
+        [TargetGroupArn: otherArn,  Weight: 0]
     ]
 
     def forwardAction = [
