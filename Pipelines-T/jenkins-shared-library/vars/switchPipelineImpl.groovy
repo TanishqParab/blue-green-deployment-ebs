@@ -34,21 +34,38 @@ def fetchResources(Map config) {
         } else if (config.implementation == 'ecs') {
             def resourceInfo = ecsUtils.fetchResources(config)
 
-            // Store for later use
-            env.IDLE_TG_ARN = resourceInfo.IDLE_TG_ARN
-            env.LISTENER_ARN = resourceInfo.LISTENER_ARN
-            env.IDLE_ENV = resourceInfo.IDLE_ENV
+            // Store for later use in environment variables
+            env.ECS_CLUSTER     = resourceInfo.ECS_CLUSTER
+            env.BLUE_TG_ARN     = resourceInfo.BLUE_TG_ARN
+            env.GREEN_TG_ARN    = resourceInfo.GREEN_TG_ARN
+            env.ALB_ARN         = resourceInfo.ALB_ARN
+            env.LISTENER_ARN    = resourceInfo.LISTENER_ARN
+            env.LIVE_ENV        = resourceInfo.LIVE_ENV
+            env.IDLE_ENV        = resourceInfo.IDLE_ENV
+            env.LIVE_TG_ARN     = resourceInfo.LIVE_TG_ARN
+            env.IDLE_TG_ARN     = resourceInfo.IDLE_TG_ARN
+            env.LIVE_SERVICE    = resourceInfo.LIVE_SERVICE
+            env.IDLE_SERVICE    = resourceInfo.IDLE_SERVICE
 
             // CRITICAL: Set the target environment for traffic switch
             env.TARGET_ENV = resourceInfo.IDLE_ENV
 
             // Optionally update config for downstream stages
-            config.IDLE_TG_ARN = env.IDLE_TG_ARN
+            config.ECS_CLUSTER  = env.ECS_CLUSTER
+            config.BLUE_TG_ARN  = env.BLUE_TG_ARN
+            config.GREEN_TG_ARN = env.GREEN_TG_ARN
+            config.ALB_ARN      = env.ALB_ARN
             config.LISTENER_ARN = env.LISTENER_ARN
-            config.IDLE_ENV = env.IDLE_ENV
+            config.LIVE_ENV     = env.LIVE_ENV
+            config.IDLE_ENV     = env.IDLE_ENV
+            config.LIVE_TG_ARN  = env.LIVE_TG_ARN
+            config.IDLE_TG_ARN  = env.IDLE_TG_ARN
+            config.LIVE_SERVICE = env.LIVE_SERVICE
+            config.IDLE_SERVICE = env.IDLE_SERVICE
         }
     }
 }
+
 
 def ensureTargetGroupAssociation(Map config) {
     if (config.implementation == 'ecs' && env.DEPLOY_NEW_VERSION == 'true') {
@@ -149,10 +166,16 @@ def switchTraffic(Map config) {
         if (config.implementation == 'ec2') {
             ec2Utils.switchTraffic(config)
         } else if (config.implementation == 'ecs') {
-            ecsUtils.switchTrafficToTargetEnv(env.TARGET_ENV)
+            ecsUtils.switchTrafficToTargetEnv(
+                env.TARGET_ENV,
+                env.BLUE_TG_ARN,
+                env.GREEN_TG_ARN,
+                env.LISTENER_ARN
+            )
         }
     }
 }
+
 
 def postSwitchActions(Map config) {
     if ((config.implementation == 'ec2' && env.EXECUTION_TYPE == 'APP_DEPLOY') ||
