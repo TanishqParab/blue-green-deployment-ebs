@@ -47,10 +47,10 @@ resource "null_resource" "docker_build_push" {
       docker build -t ${each.value.image_name} ${var.docker_build_args} --build-arg APP_NAME=${replace(each.key, "app_", "")} .
       
       # Tag the image
-      docker tag ${each.value.image_name}:${each.value.image_tag} ${aws_ecr_repository.app_repo.repository_url}:${var.image_tag}:${each.key}
-      
+      docker tag ${each.value.image_name}:${each.value.image_tag} ${aws_ecr_repository.app_repo.repository_url}:${each.key}
+
       # Push the image
-      docker push ${aws_ecr_repository.app_repo.repository_url}:${var.image_tag}:${each.key}
+      docker push ${aws_ecr_repository.app_repo.repository_url}:${each.key}
     EOT
   }
 
