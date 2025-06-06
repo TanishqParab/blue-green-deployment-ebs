@@ -127,7 +127,7 @@ resource "aws_ecs_task_definition" "blue_task" {
 
   container_definitions = jsonencode([{
     name      = each.value.container_name
-    image     = "${var.container_image}:latest:${each.key}"
+    image     = "${var.container_image}:${each.key}"
     essential = var.container_essential
     cpu       = tonumber(var.cpu)
     memory    = tonumber(var.memory)
@@ -250,7 +250,7 @@ resource "aws_ecs_task_definition" "green_task" {
 
   container_definitions = jsonencode([{
     name      = "${each.value.container_name}${var.green_container_name_suffix}"
-    image     = "${var.container_image}:latest:${each.key}"
+    image     = "${var.container_image}:${each.key}"
     essential = var.container_essential
     cpu       = tonumber(var.cpu)
     memory    = tonumber(var.memory)
