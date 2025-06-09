@@ -217,7 +217,7 @@ ecr = {
   repository_name      = "blue-green-app"
   image_tag_mutability = "MUTABLE"
   scan_on_push         = true
-  skip_docker_build    = true
+  skip_docker_build    = false
 
   # Docker build settings 
   image_name             = "blue-green-app"
