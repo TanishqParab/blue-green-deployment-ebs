@@ -1,0 +1,933 @@
+pipeline {
+
+    
+    agent any
+    
+    environment {
+        AWS_REGION = "us-east-1"
+        AWS_CREDENTIALS_ID = "aws-credentials"
+        TF_WORKING_DIR = "/var/lib/jenkins/workspace/blue-green-deployment-job/blue-green-deployment"
+        APP_FILE = "app.py"
+        SSH_KEY_ID = "blue-green-key"
+        PRIVATE_KEY = credentials('blue-green-key')
+    }
+    
+    
+    parameters {
+        choice(name: 'MANUAL_BUILD', choices: ['YES', 'DESTROY', 'ROLLBACK', 'NO'], description: 'YES: Run Terraform, DESTROY: Destroy Infra, ROLLBACK: Switch Traffic Back, NO: Auto Deploy App Changes')
+        choice(name: 'ROLLBACK', choices: ['YES', 'NO'], description: 'Trigger rollback?')
+        choice(name: 'RESET', choices: ['NO', 'TARGET_GROUPS', 'FULL'], description: 'NO: No reset, TARGET_GROUPS: Reset only ALB config, FULL: Reset ALB + pipeline state')
+    }
+
+    triggers {
+        githubPush()  // ✅ Trigger pipeline on git push
+    }
+
+    stages {
+        stage('Initialize') {
+            steps {
+                script {
+                    def buildId = currentBuild.number
+                    echo "Current Build ID: ${buildId}"
+                }
+            }
+        }
+        
+        stage('Set Execution Type') {
+            steps {
+                script {
+                    // Default Execution Type
+                    env.EXECUTION_TYPE = 'SKIP'
+
+                    // 1️⃣ Handle Destroy First (Highest Priority)
+                    if (params.MANUAL_BUILD == 'DESTROY') {
+                        echo "❌ Destroy requested. Running destroy stage only."
+                        env.EXECUTION_TYPE = 'DESTROY'
+                    } 
+                    // 2️⃣ Check if MANUAL_BUILD is YES before checking changes
+                    else if (params.MANUAL_BUILD == 'YES') {
+                        echo "🛠️ Manual build requested. Running Terraform regardless of changes."
+                        env.EXECUTION_TYPE = 'MANUAL_APPLY'
+                    }
+                    // 3️⃣ Detect Changed Files
+                    else {
+                        def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim().split('\n')
+                        echo "Changed files: ${changedFiles}"
+
+                        def onlyAppChange = (changedFiles.length == 1 && changedFiles[0] == "blue-green-deployment/modules/ec2/scripts/app.py")
+
+                        if (onlyAppChange) {
+                            echo "🚀 Detected only app.py change, executing App Deploy first."
+                            env.EXECUTION_TYPE = 'APP_DEPLOY'
+                        } else {
+                            echo "✅ Infra changes detected (excluding app.py), running full deployment."
+                            env.EXECUTION_TYPE = 'FULL_DEPLOY'
+                        }
+                    }
+
+                    echo "Final Execution Type: ${env.EXECUTION_TYPE}"
+                }
+            }
+        }
+
+
+
+
+        
+        stage('Checkout') {
+            when {
+                allOf {
+                    expression { env.EXECUTION_TYPE != 'DESTROY' }
+                    expression { env.EXECUTION_TYPE != 'ROLLBACK' }
+                }
+            }
+            steps {
+                script {
+                    echo "Checking out the latest code..."
+                    checkout scmGit(branches: [[name: 'main']], extensions: [], userRemoteConfigs: [[url: 'https://github.com/TanishqParab/blue-green-deployment']])
+                }
+            }
+        }
+
+        stage('Terraform Init') {
+            when {
+                expression { env.EXECUTION_TYPE == 'FULL_DEPLOY' || env.EXECUTION_TYPE == 'MANUAL_APPLY' }
+            }
+            steps {
+                script {
+                    echo "Initializing Terraform..."
+                    dir("${TF_WORKING_DIR}") {
+                        sh "terraform init"
+                    }
+                }
+            }
+        }
+
+
+
+        stage('Plan & Apply Infrastructure') {
+            when {
+                expression { env.EXECUTION_TYPE == 'FULL_DEPLOY' || env.EXECUTION_TYPE == 'MANUAL_APPLY' }
+            }
+            steps {
+                script {
+
+                    echo "Running Terraform plan and apply"
+                    dir("${TF_WORKING_DIR}") {
+                        sh "terraform apply -var=blue_target_group_arn=${env.BLUE_TG_ARN} -var=green_target_group_arn=${env.GREEN_TG_ARN} -auto-approve"
+                    }
+                    echo "Waiting for instances to start..."
+                    sleep(60)  // Give time for instances to fully boot
+
+                    echo "Checking instance states..."
+                    sh """
+                    aws ec2 describe-instances \
+                    --filters "Name=tag:Environment,Values=Blue-Green" \
+                    --query 'Reservations[*].Instances[*].[InstanceId, State.Name]' \
+                    --output table
+                    """
+
+                    echo "Retrieving instance IPs..."
+                    def instances = sh(
+                        script: """
+                        aws ec2 describe-instances \
+                        --filters "Name=tag:Environment,Values=Blue-Green" "Name=instance-state-name,Values=running" \
+                        --query 'Reservations[*].Instances[*].PublicIpAddress' \
+                        --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (!instances) {
+                        error "No running instances found! Check AWS console and tagging."
+                    }
+
+                    def instanceList = instances.split("\n")
+
+                    instanceList.each { instance ->
+                        echo "Deploying to instance: ${instance}"
+                        sshagent([SSH_KEY_ID]) {
+                            sh """
+                            echo "Copying app.py and setup script to ${instance}..."
+                            scp -o StrictHostKeyChecking=no ${TF_WORKING_DIR}/modules/ec2/scripts/app.py ec2-user@${instance}:/home/ec2-user/app.py
+                            scp -o StrictHostKeyChecking=no ${TF_WORKING_DIR}/modules/ec2/scripts/setup_flask_service.py ec2-user@${instance}:/home/ec2-user/setup_flask_service.py
+
+                            echo "Running setup script on ${instance}..."
+                            ssh ec2-user@${instance} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py'
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Fetch Target Group ARNs') {
+            when {
+                allOf {
+                    expression { env.EXECUTION_TYPE == 'APP_DEPLOY' }
+                    expression { env.EXECUTION_TYPE != 'ROLLBACK' }
+                }
+            }
+            steps {
+                script {
+                    echo "Fetching Target Group ARNs from AWS..."
+
+                    env.BLUE_TG_ARN = sh(
+                        script: """
+                        aws elbv2 describe-target-groups --names "blue-tg" --query 'TargetGroups[0].TargetGroupArn' --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    env.GREEN_TG_ARN = sh(
+                        script: """
+                        aws elbv2 describe-target-groups --names "green-tg" --query 'TargetGroups[0].TargetGroupArn' --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (!env.BLUE_TG_ARN || !env.GREEN_TG_ARN) {
+                        error "❌ Failed to fetch Target Group ARNs! Check if they exist in AWS."
+                    }
+
+                    echo "✅ Blue Target Group ARN: ${env.BLUE_TG_ARN}"
+                    echo "✅ Green Target Group ARN: ${env.GREEN_TG_ARN}"
+                }
+            }
+        }
+
+        stage('Register Instances to Target Groups') {
+            when {
+                allOf {
+                    expression { env.EXECUTION_TYPE == 'APP_DEPLOY' }
+                    expression { env.EXECUTION_TYPE != 'ROLLBACK' }
+                }
+            }
+            steps {
+                script {
+                    echo "Fetching Blue and Green instance IDs..."
+        
+                    def blueInstanceId = sh(
+                        script: """
+                        aws ec2 describe-instances --filters "Name=tag:Name,Values=Blue-Instance" "Name=instance-state-name,Values=running" \
+                        --query 'Reservations[0].Instances[0].InstanceId' --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+        
+                    def greenInstanceId = sh(
+                        script: """
+                        aws ec2 describe-instances --filters "Name=tag:Name,Values=Green-Instance" "Name=instance-state-name,Values=running" \
+                        --query 'Reservations[0].Instances[0].InstanceId' --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+        
+                    if (!blueInstanceId || !greenInstanceId) {
+                        error "❌ Blue or Green instance not found! Check AWS console."
+                    }
+        
+                    echo "✅ Blue Instance ID: ${blueInstanceId}"
+                    echo "✅ Green Instance ID: ${greenInstanceId}"
+        
+                    echo "❌ Deregistering old instances before re-registering..."
+                    sh """
+                        aws elbv2 deregister-targets --target-group-arn ${env.BLUE_TG_ARN} --targets Id=${greenInstanceId}
+                        aws elbv2 deregister-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${blueInstanceId}
+                    """
+                    sleep(10) // Give AWS time to process deregistration before registering
+        
+                    echo "✅ Registering instances to the correct target groups..."
+                    sh """
+                        aws elbv2 register-targets --target-group-arn ${env.BLUE_TG_ARN} --targets Id=${blueInstanceId}
+                        aws elbv2 register-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${greenInstanceId}
+                    """
+                    
+                    echo "✅ Instances successfully registered to correct target groups!"
+                }
+            }
+        }
+
+        stage('Deploy to Blue Instance') {
+            when {
+                allOf {
+                    expression { env.EXECUTION_TYPE == 'APP_DEPLOY' }
+                    expression { env.EXECUTION_TYPE != 'ROLLBACK' }
+                }
+            }
+            steps {
+                script {
+                    def blueInstanceIP = sh(
+                        script: """
+                        aws ec2 describe-instances --filters "Name=tag:Name,Values=Blue-Instance" "Name=instance-state-name,Values=running" \
+                        --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (!blueInstanceIP) {
+                        error "❌ No running Blue instance found!"
+                    }
+
+                    echo "✅ Deploying to Blue instance: ${blueInstanceIP}"
+
+                    sshagent([env.SSH_KEY_ID]) {
+                        sh "scp -o StrictHostKeyChecking=no ${TF_WORKING_DIR}/modules/ec2/scripts/app.py ec2-user@${blueInstanceIP}:/home/ec2-user/app.py"
+                        sh "ssh ec2-user@${blueInstanceIP} 'sudo systemctl restart flaskapp.service'"
+                    }
+
+                    env.BLUE_INSTANCE_IP = blueInstanceIP
+                }
+            }
+        }
+        
+        stage('Wait for Blue Instance to Become Healthy') {
+            when {
+                allOf {
+                    expression { env.EXECUTION_TYPE == 'APP_DEPLOY' }
+                    expression { env.EXECUTION_TYPE != 'ROLLBACK' }
+                }
+            }
+            steps {
+                script {
+                    def blueInstanceId = sh(
+                        script: """
+                        aws ec2 describe-instances --filters "Name=tag:Name,Values=Blue-Instance" "Name=instance-state-name,Values=running" \
+                        --query 'Reservations[0].Instances[0].InstanceId' --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    if (!blueInstanceId) {
+                        error "❌ No running Blue instance found!"
+                    }
+
+                    echo "🔍 Monitoring health of Blue instance: ${blueInstanceId}"
+
+                    def healthStatus = ''
+                    while (healthStatus != 'healthy') {
+                        sleep(10)
+                        healthStatus = sh(script: "aws elbv2 describe-target-health --target-group-arn ${env.BLUE_TG_ARN} --targets Id=${blueInstanceId} --query 'TargetHealthDescriptions[0].TargetHealth.State' --output text", returnStdout: true).trim()
+                    }
+
+                    echo "✅ Blue instance is healthy!"
+                }
+            }
+        }
+
+        stage('Switch Traffic') {
+            when {
+                allOf {
+                    expression { env.EXECUTION_TYPE == 'APP_DEPLOY' }
+                    expression { env.EXECUTION_TYPE != 'ROLLBACK' }
+                }
+            }
+            steps {
+                script {
+                    echo "🔄 Fetching ALB listener ARN..."
+                    
+                    // Existing ALB and listener validation
+                    def albArn = sh(script: """
+                        aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text
+                    """, returnStdout: true).trim()
+        
+                    if (!albArn) {
+                        error "❌ Failed to retrieve ALB ARN! Check if the load balancer 'blue-green-alb' exists in AWS."
+                    }
+        
+                    echo "✅ ALB ARN: ${albArn}"
+        
+                    def listenerArn = sh(script: """
+                        aws elbv2 describe-listeners --load-balancer-arn ${albArn} --query 'Listeners[?Port==`80`].ListenerArn' --output text
+                    """, returnStdout: true).trim()
+        
+                    if (!listenerArn) {
+                        error "❌ Listener ARN not found! Check if the ALB has a listener attached."
+                    }
+        
+                    echo "✅ Listener ARN: ${listenerArn}"
+        
+                    // 3. Clean up any existing priority 10 rules (from previous rollbacks)
+                    echo "🔍 Checking for existing priority 10 rules..."
+                    def ruleArn = sh(script: """
+                        aws elbv2 describe-rules --listener-arn '${listenerArn}' \
+                        --query "Rules[?Priority=='10'].RuleArn | [0]" --output text
+                    """, returnStdout: true).trim()
+
+                    if (ruleArn && ruleArn != "None") {
+                        echo "🔄 Deleting existing rule (Priority 10)..."
+                        sh """
+                            aws elbv2 delete-rule --rule-arn '${ruleArn}'
+                        """
+                        echo "✅ Removed existing priority 10 rule"
+                    } else {
+                        echo "ℹ️ No existing priority 10 rule found"
+                    }
+
+                    // 4. Update default traffic routing (no weighted rule needed)
+                    echo "🔄 Configuring default traffic routing to Blue..."
+                    sh """
+                        aws elbv2 modify-listener --listener-arn ${listenerArn} \
+                        --default-actions Type=forward,TargetGroupArn=${env.BLUE_TG_ARN}
+                    """
+
+                    // 5. Verification
+                    def currentDefaultAction = sh(script: """
+                        aws elbv2 describe-listeners --listener-arns ${listenerArn} \
+                        --query 'Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups[0].TargetGroupArn' \
+                        --output text
+                    """, returnStdout: true).trim()
+
+                    if (currentDefaultAction != env.BLUE_TG_ARN) {
+                        error "❌ Verification failed! Default action not pointing to BLUE target group"
+                    }
+
+                    echo "✅✅✅ Traffic switching completed successfully!"
+                    echo "============================================="
+                    echo "CURRENT ROUTING:"
+                    echo "- Default route: 100% to BLUE (${env.BLUE_TG_ARN})"
+                    echo "- No path-based or weighted rules active"
+                }
+            }
+        }
+        
+        stage('Tag Swap for Next Deployment') {
+            when {
+                allOf {
+                    expression { env.EXECUTION_TYPE == 'APP_DEPLOY' }
+                    expression { env.EXECUTION_TYPE != 'ROLLBACK' }
+                }
+            }
+            steps {
+                script {
+                    // =========================================
+                    // 1. DYNAMIC RESOURCE DISCOVERY (SAFE VERSION)
+                    // =========================================
+                    echo "🌐 Discovering AWS resources..."
+                    
+                    // Get instances with safe parsing
+                    def instances = sh(script: '''
+                        aws ec2 describe-instances \
+                            --filters "Name=tag:Name,Values=Blue-Instance,Green-Instance" \
+                                     "Name=instance-state-name,Values=running" \
+                            --query 'Reservations[].Instances[].[InstanceId,Tags[?Key==`Name`].Value | [0]]' \
+                            --output json
+                    ''', returnStdout: true).trim()
+                    
+                    // Parse JSON output safely
+                    def instancesJson = readJSON text: instances
+                    def blueInstance = null
+                    def greenInstance = null
+                    
+                    for (instance in instancesJson) {
+                        if (instance[1] == "Blue-Instance") {
+                            blueInstance = instance[0]
+                        } else if (instance[1] == "Green-Instance") {
+                            greenInstance = instance[0]
+                        }
+                    }
+                    
+                    if (!blueInstance || !greenInstance) {
+                        error "❌ Could not find both Blue and Green running instances. Found:\n${instancesJson}"
+                    }
+                    echo "✔️ Found instances - Blue: ${blueInstance}, Green: ${greenInstance}"
+        
+                    // =========================================
+                    // 2. AUTOMATIC LOAD BALANCER DISCOVERY
+                    // =========================================
+                    echo "🔎 Finding associated load balancer..."
+                    
+                    def targetGroupArns = sh(script: '''
+                        aws elbv2 describe-target-groups \
+                            --query "TargetGroups[].TargetGroupArn" \
+                            --output text
+                    ''', returnStdout: true).trim().split()
+    
+                    def albArn = null
+                    def listenerArn = null
+                    def foundValidTG = false
+    
+                    for (tg in targetGroupArns) {
+                        // Check instance health in target group
+                        def health = sh(script: """
+                            aws elbv2 describe-target-health \
+                                --target-group-arn ${tg} \
+                                --query "length(TargetHealthDescriptions[?Target.Id == '${blueInstance}' || Target.Id == '${greenInstance}'])" \
+                                --output text
+                        """, returnStdout: true).trim().toInteger()
+    
+                        if (health > 0) {
+                            echo "⚡ Found active target group: ${tg}"
+                            
+                            // Get ALB ARN (with null check)
+                            // Get ALB ARN - FIXED QUERY
+                            albArn = sh(script: """
+                                aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text
+                            """, returnStdout: true).trim()
+                            
+                            echo "✅ Load Balancer ARN: ${albArn}"
+
+                            
+                            if (albArn && albArn != 'None') {
+                                listenerArn = sh(script: """
+                                    aws elbv2 describe-listeners --load-balancer-arn '${albArn}' --query "Listeners[0].ListenerArn" --output text
+                                """, returnStdout: true).trim()
+                                echo "✅ Listener ARN: ${listenerArn}"
+                                foundValidTG = true
+                                break
+                            } else {
+                                echo "⚠️ Found target group but no associated ALB: ${tg}"
+                            }
+                        }
+                    }
+                    
+                    if (!foundValidTG) {
+                        error """❌ No valid load balancer found routing to these instances.
+                        Checked target groups: ${targetGroupArns}
+                        Last ALB ARN found: ${albArn}"""
+                    }
+
+                    echo "✔️ Discovered ALB: ${albArn}"
+                    echo "✔️ Listener ARN: ${listenerArn}"
+    
+                    // =============================================
+                    // 3. TAG SWAP EXECUTION
+                    // =============================================
+                    echo "🔄 Performing atomic tag swap..."
+                    
+                    sh """
+                        #!/bin/bash
+                        set -euo pipefail
+    
+                        # Verify instances exist
+                        if [ -z "${blueInstance}" ] || [ -z "${greenInstance}" ]; then
+                            echo "❌ Missing instance IDs"
+                            exit 1
+                        fi
+    
+                        # Perform swap with verification
+                        aws ec2 create-tags \
+                            --resources ${blueInstance} \
+                            --tags Key=Name,Value=Green-Instance
+                            
+                        aws ec2 create-tags \
+                            --resources ${greenInstance} \
+                            --tags Key=Name,Value=Blue-Instance
+    
+                        # Verify changes
+                        blue_tag=\$(aws ec2 describe-tags \
+                            --filters "Name=resource-id,Values=${blueInstance}" \
+                                      "Name=key,Values=Name" \
+                            --query "Tags[0].Value" \
+                            --output text)
+                            
+                        green_tag=\$(aws ec2 describe-tags \
+                            --filters "Name=resource-id,Values=${greenInstance}" \
+                                      "Name=key,Values=Name" \
+                            --query "Tags[0].Value" \
+                            --output text)
+    
+                        if [ "\$blue_tag" != "Green-Instance" ] || [ "\$green_tag" != "Blue-Instance" ]; then
+                            echo "❌ Tag verification failed!"
+                            exit 1
+                        fi
+                    """
+                    
+                    // =========================================
+                    // 4. TRAFFIC VERIFICATION
+                    // =========================================
+                    echo "📊 Verifying traffic distribution..."
+                    
+                    def weights = sh(script: """
+                        aws elbv2 describe-rules \
+                            --listener-arn ${listenerArn} \
+                            --query "Rules[?contains(Actions[].ForwardConfig.TargetGroups[].TargetGroupArn, '${targetGroupArns[0]}')].Actions[0].ForwardConfig.TargetGroups[].Weight" \
+                            --output text
+                    """, returnStdout: true).trim().split()
+                    
+                    echo "✅ Deployment Complete!"
+                    echo "====================="
+                    echo "Instance Tags:"
+                    echo "- ${blueInstance} (now Green)"
+                    echo "- ${greenInstance} (now Blue)"
+                    echo ""
+                    echo "Traffic Routing:"
+                    echo "- Default route now points to BLUE target group"
+                    echo "- Any rollback rules have been cleaned up"
+                }
+            }
+        }
+        
+        stage('Rollback: Switch ALB Traffic') {
+            when { expression { env.EXECUTION_TYPE == 'ROLLBACK' } }
+            steps {
+                script {
+                    echo "🔄 Initiating rollback by switching ALB traffic rules..."
+                    
+                    // 1. Get ALB and listener details
+                    def albArn = sh(script: """
+                        aws elbv2 describe-load-balancers \
+                            --names blue-green-alb \
+                            --query 'LoadBalancers[0].LoadBalancerArn' \
+                            --output text
+                    """, returnStdout: true).trim()
+                    
+                    def listenerArn = sh(script: """
+                        aws elbv2 describe-listeners \
+                            --load-balancer-arn ${albArn} \
+                            --query 'Listeners[?Port==`80`].ListenerArn' \
+                            --output text
+                    """, returnStdout: true).trim()
+                    
+
+                    
+                    // 3. Get target group ARNs
+                    env.BLUE_TG_ARN = sh(script: """
+                        aws elbv2 describe-target-groups \
+                            --names blue-tg \
+                            --query 'TargetGroups[0].TargetGroupArn' \
+                            --output text
+                    """, returnStdout: true).trim()
+                    
+                    env.GREEN_TG_ARN = sh(script: """
+                        aws elbv2 describe-target-groups \
+                            --names green-tg \
+                            --query 'TargetGroups[0].TargetGroupArn' \
+                            --output text
+                    """, returnStdout: true).trim()
+                    
+                    // ✅ Validate the GREEN_TG_ARN before using it
+                    if (!env.GREEN_TG_ARN || env.GREEN_TG_ARN == 'null') {
+                        error "❌ GREEN_TG_ARN not retrieved properly. Aborting rollback."
+                    } else {
+                        echo "✅ GREEN_TG_ARN retrieved: ${env.GREEN_TG_ARN}"
+                    }
+
+                    
+                    // 2. Create rollback rule first (priority 10)
+                    echo "🛠️ Creating rollback traffic rule..."
+                    sh """
+                        aws elbv2 create-rule \
+                            --listener-arn ${listenerArn} \
+                            --priority 10 \
+                            --conditions Field=path-pattern,Values='/*' \
+                            --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
+                    """
+                    
+                    // 4. Dynamically fetch all registered instances in green-tg and pick the one tagged as "blue-instance"
+                    def targetHealthData = sh(script: """
+                        aws elbv2 describe-target-health \
+                            --target-group-arn ${env.GREEN_TG_ARN} \
+                            --query 'TargetHealthDescriptions[*].[Target.Id, TargetHealth.State]' \
+                            --output text
+                    """, returnStdout: true).trim()
+                    
+                    // Log full target list
+                    echo "🔍 All target health data in green-tg:\n${targetHealthData}"
+                    
+                    // Get all instance IDs from green-tg
+                    def targetInstanceIds = targetHealthData.readLines().collect { it.split()[0] }
+                    
+                    // Fetch Name tags for all instances
+                    def instanceIds = targetInstanceIds.join(' ')
+                    def instanceDetails = sh(script: '''
+                        aws ec2 describe-instances \
+                            --instance-ids ''' + instanceIds + ''' \
+                            --query "Reservations[*].Instances[*].[InstanceId, Tags[?Key=='Name']|[0].Value]" \
+                            --output text
+                    ''', returnStdout: true).trim()
+                                        
+                    echo "🔍 Fetched EC2 instance names:\n${instanceDetails}"
+                    
+                    // Find instance with Name = "Blue-Instance"
+                    // Filter only valid lines with both InstanceId and Name tag
+                    def blueLine = instanceDetails.readLines().find { line ->
+                        def parts = line.split('\t')
+                        return parts.size() == 2 && parts[1].equalsIgnoreCase('blue-instance')
+                    }
+                    
+                    if (!blueLine) {
+                        error "❌ No instance with tag Name=blue-instance found in green-tg. Cannot proceed with rollback."
+                    }
+                    
+                    def (blueInstanceId, instanceName) = blueLine.split('\t')
+                    
+                    // Get health status for that exact instance
+                    def healthState = targetHealthData.readLines().find { it.startsWith(blueInstanceId) }?.split()[1]
+                    
+                    if (!healthState) {
+                        error "❌ blue-instance is not currently registered in green-tg or health data is missing."
+                    }
+                    
+                    echo "✅ Found blue-instance (${blueInstanceId}) with health state: ${healthState}"
+                    
+                    env.STANDBY_INSTANCE = blueInstanceId
+                    
+                    // 5. Ensure green-tg instance becomes healthy
+                    echo "⏳ Waiting for standby instance (${env.STANDBY_INSTANCE}) to become healthy..."
+                    def healthy = false
+                    def attempts = 0
+                    
+                    while (!healthy && attempts < 12) { // 2 minute timeout
+                        sleep(time: 30, unit: 'SECONDS')
+                        attempts++
+                        
+                        healthState = sh(script: """
+                            aws elbv2 describe-target-health \
+                                --target-group-arn ${env.GREEN_TG_ARN} \
+                                --targets Id=${env.STANDBY_INSTANCE} \
+                                --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+                                --output text
+                        """, returnStdout: true).trim()
+                        
+                        echo "Attempt ${attempts}/12: Health state = ${healthState}"
+                        
+                        if (healthState == 'healthy') {
+                            healthy = true
+                        } else if (healthState == 'unused' && attempts > 3) {
+                            echo "⚠️ Triggering health check reevaluation"
+                            sh """
+                                aws elbv2 deregister-targets \
+                                    --target-group-arn ${env.GREEN_TG_ARN} \
+                                    --targets Id=${env.STANDBY_INSTANCE}
+                                sleep 15 
+                                aws elbv2 register-targets \
+                                    --target-group-arn ${env.GREEN_TG_ARN} \
+                                    --targets Id=${env.STANDBY_INSTANCE}
+                                sleep 10
+                            """
+                        }
+                    }
+                    
+                    if (!healthy) {
+                        error "❌ Rollback failed: Standby instance did not become healthy (Final state: ${healthState})"
+                    }
+                    
+                    echo "✅✅✅ ROLLBACK COMPLETE: Traffic now routed to previous version (GREEN-TG)"
+                }
+            }
+        }
+
+
+        stage('Reset Target Groups') {
+            when {
+                anyOf {
+                    expression { params.RESET == 'TARGET_GROUPS' || params.RESET == 'FULL' }
+                    expression { env.EXECUTION_TYPE == 'ROLLBACK' && params.RESET != 'NO' }
+                    expression { params.MANUAL_BUILD == 'YES' && params.RESET != 'NO' }
+                }
+            }
+            steps {
+                script {
+                    // 🔄 Dynamically fetch instance IDs by tag
+                    def getInstanceId = { tagValue ->
+                        return sh(returnStdout: true, script: """
+                            aws ec2 describe-instances \
+                                --filters "Name=tag:Name,Values=${tagValue}" "Name=instance-state-name,Values=running" \
+                                --query 'Reservations[0].Instances[0].InstanceId' \
+                                --output text || echo ''
+                        """).trim()
+                    }
+        
+                    // 🧠 Auto-discover ALB Name
+                    def albName = sh(script: """
+                        aws elbv2 describe-load-balancers \
+                            --query 'LoadBalancers[?Scheme==`internet-facing`].[LoadBalancerName]' \
+                            --output text | head -n 1
+                    """, returnStdout: true).trim()
+        
+                    // 🎯 ALB ARN
+                    def albArn = sh(script: """
+                        aws elbv2 describe-load-balancers \
+                            --names ${albName} \
+                            --query 'LoadBalancers[0].LoadBalancerArn' \
+                            --output text
+                    """, returnStdout: true).trim()
+        
+                    // 🎧 Listener ARN
+                    def listenerArn = sh(script: """
+                        aws elbv2 describe-listeners --load-balancer-arn '${albArn}' --query "Listeners[0].ListenerArn" --output text
+                    """, returnStdout: true).trim()
+
+                    if (!listenerArn || listenerArn == "None") {
+                        error("❌ Listener ARN not found! Ensure the ALB has a listener on port 80.")
+                    }
+
+                    echo "✅ Listener ARN: ${listenerArn}"
+        
+                    // 🔵 Blue Target Group ARN
+                    def blueTgArn = sh(script: '''
+                        aws elbv2 describe-target-groups \
+                            --query "TargetGroups[?contains(TargetGroupName, 'blue')].TargetGroupArn" \
+                            --output text | head -n 1
+                    ''', returnStdout: true).trim()
+        
+                    // 🟢 Green Target Group ARN
+                    def greenTgArn = sh(script: '''
+                        aws elbv2 describe-target-groups \
+                            --query "TargetGroups[?contains(TargetGroupName, 'green')].TargetGroupArn" \
+                            --output text | head -n 1
+                    ''', returnStdout: true).trim()
+        
+                    // 🔁 Wait until instance is healthy in TG
+                    def waitForHealth = { instanceId, tgArn ->
+                        def state = ''
+                        def timeout = 60
+                        while (state != 'healthy' && timeout > 0) {
+                            sleep(5)
+                            state = sh(returnStdout: true, script: """
+                                aws elbv2 describe-target-health \
+                                    --target-group-arn ${tgArn} \
+                                    --targets Id=${instanceId} \
+                                    --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+                                    --output text || echo 'unavailable'
+                            """).trim()
+                            echo "🔎 ${instanceId} in TG ${tgArn} → Health: ${state}"
+                            timeout -= 5
+                        }
+                    }
+        
+                    // 🔥 Remove existing rule if it exists
+                    def ruleArn = sh(script: """
+                        aws elbv2 describe-rules \
+                            --listener-arn ${listenerArn} \
+                            --query "Rules[?Priority=='10'].RuleArn | [0]" \
+                            --output text || echo ''
+                    """, returnStdout: true).trim()
+        
+                    if (ruleArn && ruleArn != 'None') {
+                        sh "aws elbv2 delete-rule --rule-arn ${ruleArn}"
+                        echo "✅ Deleted rule with priority 10"
+                    } else {
+                        echo "⚠️ No rule with priority 10 found. Skipping deletion."
+                    }
+        
+                    // 🔃 Route traffic to BLUE-TG (should contain latest version instance)
+                    sh """
+                        aws elbv2 modify-listener \
+                            --listener-arn ${listenerArn} \
+                            --default-actions Type=forward,TargetGroupArn=${blueTgArn}
+                    """
+        
+                    // 🔁 Get dynamic instance IDs from target groups
+                    def greenInstance = sh(
+                        script: """
+                            aws elbv2 describe-target-health \
+                                --target-group-arn ${greenTgArn} \
+                                --query 'TargetHealthDescriptions[0].Target.Id' \
+                                --output text || echo ''
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    def blueInstance = sh(
+                        script: """
+                            aws elbv2 describe-target-health \
+                                --target-group-arn ${blueTgArn} \
+                                --query 'TargetHealthDescriptions[0].Target.Id' \
+                                --output text || echo ''
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    // 🌐 Fetch Blue instance public IP (optional logging or use)
+                    def blueInstanceIp = sh(
+                        script: '''
+                            aws ec2 describe-instances \
+                                --filters "Name=tag:Name,Values=Blue-Instance" "Name=instance-state-name,Values=running" \
+                                --query "Reservations[0].Instances[0].PublicIpAddress" \
+                                --output text
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "🌐 Blue Instance IP: ${blueInstanceIp}"
+        
+                    // ♻️ Register Green → BLUE-TG
+                    // ♻️ Register Green → BLUE-TG
+                    if (greenInstance) {
+                        echo "🟢 Registering Green instance (${greenInstance}) to BLUE-TG"
+                        sh """
+                            aws elbv2 register-targets \
+                                --target-group-arn ${blueTgArn} \
+                                --targets Id=${greenInstance}
+                        """
+                        waitForHealth(greenInstance, blueTgArn)
+                    }
+                    
+                    // ❌ Deregister Green from GREEN-TG (avoid duplicate)
+                    if (greenInstance) {
+                        echo "❌ Deregistering Green instance (${greenInstance}) from GREEN-TG"
+                        sh """
+                            aws elbv2 deregister-targets \
+                                --target-group-arn ${greenTgArn} \
+                                --targets Id=${greenInstance} || true
+                        """
+                    }
+                    
+                    // ♻️ Register Blue → GREEN-TG
+                    if (blueInstance) {
+                        echo "🔵 Registering Blue instance (${blueInstance}) to GREEN-TG"
+                        sh """
+                            aws elbv2 register-targets \
+                                --target-group-arn ${greenTgArn} \
+                                --targets Id=${blueInstance}
+                        """
+                        waitForHealth(blueInstance, greenTgArn)
+                    }
+                    
+                    // ❌ Deregister Blue instance from BLUE-TG (cleanup old)
+                    if (blueInstance) {
+                        echo "❌ Deregistering Blue instance (${blueInstance}) from BLUE-TG"
+                        sh """
+                            aws elbv2 deregister-targets \
+                                --target-group-arn ${blueTgArn} \
+                                --targets Id=${blueInstance} || true
+                        """
+                    }
+
+                    
+                    echo "✅ Reset complete: BLUE-TG now serves the latest version from Green instance"
+                }
+            }
+        }
+          
+        
+        stage('Reset Pipeline State') {
+            when {
+                expression { params.RESET == 'FULL' }
+            }
+            steps {
+                script {
+                    echo "🔄 Resetting pipeline state..."
+                    
+                    // Safe way to clear environment variables without using remove()
+                    env.EXECUTION_TYPE = 'NO'
+                    env.STANDBY_INSTANCE = ''
+                    env.ACTIVE_INSTANCE = ''
+                    
+                    // Alternative approach to preserve needed variables
+                    def preservedBlueTg = env.BLUE_TG_ARN ?: ''
+                    def preservedGreenTg = env.GREEN_TG_ARN ?: ''
+                    
+                    
+                    echo "✅ Pipeline reset complete"
+                }
+            }
+        }
+
+
+        stage('Destroy Infrastructure') {
+            when {
+                expression { params.MANUAL_BUILD == 'DESTROY' }  // ✅ Correct syntax
+            }
+            steps {
+                script {
+                    echo "Destroying infrastructure..."
+                    dir("${TF_WORKING_DIR}") {
+                        sh "terraform destroy -var=blue_target_group_arn=${env.BLUE_TG_ARN} -var=green_target_group_arn=${env.GREEN_TG_ARN} -auto-approve"
+                    }
+                }
+            }
+        }
+    }
+}
