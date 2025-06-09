@@ -123,7 +123,7 @@ alb = {
   green_target_group_name = "green-tg"
   target_group_port       = 80 # Changed from 5000 to 80
   target_group_protocol   = "HTTP"
-  target_type             = "instance"
+  target_type             = "ip"
   deregistration_delay    = 300
 
   # Application-specific target groups
