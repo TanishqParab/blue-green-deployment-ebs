@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
@@ -6,9 +6,6 @@ app = Flask(__name__)
 @app.route('/app2')
 @app.route('/app2/')
 def home():
-    # Print the request path for debugging
-    print(f"Request path: {request.path}")
-    
     return '''
         <html>
             <head>
@@ -23,10 +20,9 @@ def home():
                 <h1>Hello, Blue-Green Deployment on ECS</h1>
                 <div class="app-name">APP 2</div>
                 <div class="version">V25</div>
-                <p>Path: {}</p>
             </body>
         </html>
-    '''.format(request.path)
+    '''
 
 @app.route('/health')
 @app.route('/app2/health')
@@ -37,8 +33,7 @@ def health():
         return jsonify({
             "status": "healthy",
             "version": "V1",
-            "service": "blue-green-app-2",
-            "path": request.path
+            "service": "blue-green-app-2"
         }), 200
     except Exception as e:
         return jsonify({
@@ -47,7 +42,5 @@ def health():
         }), 500
 
 if __name__ == '__main__':
-    # Enable debug mode for more verbose output
-    app.debug = True
     # Change port to 80 to match the container_port in terraform.tfvars
     app.run(host='0.0.0.0', port=80)
