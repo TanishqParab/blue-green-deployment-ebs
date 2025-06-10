@@ -1,6 +1,5 @@
 // vars/ec2Utils.groovy
 
-
 def registerInstancesToTargetGroups(Map config) {
     if (config.implementation != 'ec2' || params.MANUAL_BUILD == 'DESTROY') {
         echo "⚠️ Skipping EC2 registration as conditions not met."
@@ -13,8 +12,10 @@ def registerInstancesToTargetGroups(Map config) {
     def appName = config.appName ?: ""
     def blueTgName = appName ? "blue-tg-${appName}" : "blue-tg"
     def greenTgName = appName ? "green-tg-${appName}" : "green-tg"
-    def blueInstanceTag = appName ? "Blue-Instance-${appName}" : "Blue-Instance"
-    def greenInstanceTag = appName ? "Green-Instance-${appName}" : "Green-Instance"
+    
+    // Use custom tag format if provided, otherwise use default format
+    def blueInstanceTag = config.blueTag ?: (appName ? "${appName}-blue-instance" : "Blue-Instance")
+    def greenInstanceTag = config.greenTag ?: (appName ? "${appName}-green-instance" : "Green-Instance")
     
     echo "🔍 Using target groups: ${blueTgName} and ${greenTgName}"
     echo "🔍 Using instance tags: ${blueInstanceTag} and ${greenInstanceTag}"
@@ -58,18 +59,26 @@ def registerInstancesToTargetGroups(Map config) {
         returnStdout: true
     ).trim()
 
-    if (!blueInstanceId || !greenInstanceId) {
-        error "❌ Blue or Green instance not found! Check AWS console."
+    // Check if instances exist before proceeding
+    if (!blueInstanceId || blueInstanceId == "None" || !greenInstanceId || greenInstanceId == "None") {
+        echo "⚠️ One or both instances not found. Blue: ${blueInstanceId}, Green: ${greenInstanceId}"
+        echo "⚠️ This is normal for the first deployment. Skipping registration."
+        return
     }
 
     echo "✅ Blue Instance ID: ${blueInstanceId}"
     echo "✅ Green Instance ID: ${greenInstanceId}"
 
     echo "🔄 Deregistering old instances before re-registering..."
-    sh """
-    aws elbv2 deregister-targets --target-group-arn ${env.BLUE_TG_ARN} --targets Id=${greenInstanceId}
-    aws elbv2 deregister-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${blueInstanceId}
-    """
+    try {
+        sh """
+        aws elbv2 deregister-targets --target-group-arn ${env.BLUE_TG_ARN} --targets Id=${greenInstanceId}
+        aws elbv2 deregister-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${blueInstanceId}
+        """
+    } catch (Exception e) {
+        echo "⚠️ Warning during deregistration: ${e.message}"
+        echo "⚠️ Continuing with registration..."
+    }
     sleep(10)
 
     echo "📝 Registering instances to the correct target groups..."
@@ -80,7 +89,6 @@ def registerInstancesToTargetGroups(Map config) {
 
     echo "✅ EC2 instances successfully registered to correct target groups!"
 }
-
 
 def detectChanges(Map config) {
     echo "🔍 Detecting changes for EC2 implementation..."
@@ -140,6 +148,7 @@ def fetchResources(Map config) {
     echo "✅ Blue Target Group ARN: ${env.BLUE_TG_ARN}"
     echo "✅ Green Target Group ARN: ${env.GREEN_TG_ARN}"
 }
+
 
 
 
