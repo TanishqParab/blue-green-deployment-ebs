@@ -68,8 +68,33 @@ pipeline {
                     if (isGitHubPush) {
                         echo "Build triggered by GitHub push - automatically using SWITCH operation"
                         operation = 'SWITCH'
+                        
+                        // Detect which app file was changed
+                        checkout scmGit(branches: [[name: env.REPO_BRANCH]], 
+                                  extensions: [], 
+                                  userRemoteConfigs: [[url: env.REPO_URL]])
+                                  
+                        def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
+                        echo "Changed files: ${changedFiles}"
+                        
+                        // Check for app_1.py, app_2.py, or app_3.py
+                        if (changedFiles.contains("app_1.py")) {
+                            env.APP_NAME = "app_1"
+                            echo "Detected changes in app_1.py, setting APP_NAME to app_1"
+                        } else if (changedFiles.contains("app_2.py")) {
+                            env.APP_NAME = "app_2"
+                            echo "Detected changes in app_2.py, setting APP_NAME to app_2"
+                        } else if (changedFiles.contains("app_3.py")) {
+                            env.APP_NAME = "app_3"
+                            echo "Detected changes in app_3.py, setting APP_NAME to app_3"
+                        } else if (changedFiles.contains("app.py")) {
+                            env.APP_NAME = ""
+                            echo "Detected changes in app.py, using default app"
+                        }
                     } else {
                         echo "Executing EC2 ${operation} pipeline..."
+                        // Use the APP_NAME parameter provided by the user
+                        env.APP_NAME = params.APP_NAME
                     }
                     
                     // Store the operation for later stages
@@ -104,10 +129,12 @@ pipeline {
                         appFile: env.APP_FILE,
                         emailRecipient: env.EMAIL_RECIPIENT,
                         repoUrl: env.REPO_URL,
-                        repoBranch: env.REPO_BRANCH
+                        repoBranch: env.REPO_BRANCH,
+                        appName: env.APP_NAME
                     ]
                     
                     echo "DEBUG: Config implementation: ${config.implementation}"
+                    echo "DEBUG: App name: ${config.appName}"
                     
                     // Call the base pipeline implementation
                     basePipelineImpl.initialize(config)
@@ -133,7 +160,22 @@ pipeline {
                     }
                     
                     if (params.MANUAL_BUILD != 'DESTROY') {
-                        ec2Utils.registerInstancesToTargetGroups(config)
+                        if (!env.APP_NAME || env.APP_NAME.trim() == '') {
+                            // Deploy all apps if no specific app is provided
+                            def appNames = ["app_1", "app_2", "app_3"]
+                            echo "No specific app name provided, deploying all apps: ${appNames}"
+                            
+                            appNames.each { appName ->
+                                def appConfig = config.clone()
+                                appConfig.appName = appName
+                                echo "Registering instances for app: ${appName}"
+                                ec2Utils.registerInstancesToTargetGroups(appConfig)
+                            }
+                        } else {
+                            // Deploy only the specified app
+                            echo "Registering instances for app: ${env.APP_NAME}"
+                            ec2Utils.registerInstancesToTargetGroups(config)
+                        }
                     }
                     
                     if (params.MANUAL_BUILD == 'DESTROY') {
@@ -143,7 +185,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Execute Switch') {
             when {
                 expression { env.SELECTED_OPERATION == 'SWITCH' }
@@ -160,9 +202,10 @@ pipeline {
                         appFile: env.APP_FILE,
                         emailRecipient: env.EMAIL_RECIPIENT,
                         repoUrl: env.REPO_URL,
-                        repoBranch: env.REPO_BRANCH
+                        repoBranch: env.REPO_BRANCH,
+                        appName: env.APP_NAME
                     ]
-                    
+                                        
                     // Call the switch pipeline implementation
                     switchPipelineImpl.initialize(config)
                     switchPipelineImpl.detectChanges(config)
@@ -196,16 +239,17 @@ pipeline {
                         appFile: env.APP_FILE,
                         emailRecipient: env.EMAIL_RECIPIENT,
                         repoUrl: env.REPO_URL,
-                        repoBranch: env.REPO_BRANCH
+                        repoBranch: env.REPO_BRANCH,
+                        appName: env.APP_NAME
                     ]
+
+
                     
                     // Call the rollback pipeline implementation
                     rollbackPipelineImpl.initialize(config)
                     rollbackPipelineImpl.fetchResources(config)
                     rollbackPipelineImpl.manualApprovalBeforeRollbackEC2(config)
                     rollbackPipelineImpl.prepareRollback(config)
-                    rollbackPipelineImpl.executeRollback(config)
-                    rollbackPipelineImpl.postRollbackActions(config)ineImpl.prepareRollback(config)
                     rollbackPipelineImpl.executeRollback(config)
                     rollbackPipelineImpl.postRollbackActions(config)
                 }
