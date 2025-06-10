@@ -169,12 +169,22 @@ pipeline {
                                 def appConfig = config.clone()
                                 appConfig.appName = appName
                                 echo "Registering instances for app: ${appName}"
-                                ec2Utils.registerInstancesToTargetGroups(appConfig)
+                                try {
+                                    ec2Utils.registerInstancesToTargetGroups(appConfig)
+                                } catch (Exception e) {
+                                    echo "⚠️ Warning: Could not register instances for ${appName}: ${e.message}"
+                                    echo "This is normal for the first deployment when instances don't exist yet."
+                                }
                             }
                         } else {
                             // Deploy only the specified app
                             echo "Registering instances for app: ${env.APP_NAME}"
-                            ec2Utils.registerInstancesToTargetGroups(config)
+                            try {
+                                ec2Utils.registerInstancesToTargetGroups(config)
+                            } catch (Exception e) {
+                                echo "⚠️ Warning: Could not register instances for ${env.APP_NAME}: ${e.message}"
+                                echo "This is normal for the first deployment when instances don't exist yet."
+                            }
                         }
                     }
                     
