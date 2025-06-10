@@ -58,7 +58,6 @@ def fetchResources(Map config) {
     }
 }
 
-
 def prepareRollback(Map config) {
     echo "🛠️ Creating rollback traffic rule..."
     
