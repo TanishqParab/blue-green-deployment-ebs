@@ -303,11 +303,19 @@ def deployToBlueInstance(Map config) {
     // 4. Copy App and Restart Service
     def appFile = config.appFile ?: env.APP_FILE
     def appPath = config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"
-    def serviceName = config.serviceName ?: "flaskapp.service"
+    
+    // Determine the correct app file based on app name
+    if (appName) {
+        appFile = "app_${appName.replace('app', '')}.py"
+    }
     
     sshagent([env.SSH_KEY_ID]) {
-        sh "scp -o StrictHostKeyChecking=no ${appPath}/${appFile} ec2-user@${blueInstanceIP}:/home/ec2-user/${appFile}"
-        sh "ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'sudo systemctl restart ${serviceName}'"
+        // Copy the app file and setup script
+        sh """
+            scp -o StrictHostKeyChecking=no ${appPath}/${appFile} ec2-user@${blueInstanceIP}:/home/ec2-user/${appFile}
+            scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${blueInstanceIP}:/home/ec2-user/setup_flask_service.py
+            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'
+        """
     }
     env.BLUE_INSTANCE_IP = blueInstanceIP
 
@@ -348,7 +356,6 @@ def deployToBlueInstance(Map config) {
 
     echo "✅ Blue instance is healthy!"
 }
-
 
 def switchTraffic(Map config) {
     // Get app name from config or default to empty string (for backward compatibility)
