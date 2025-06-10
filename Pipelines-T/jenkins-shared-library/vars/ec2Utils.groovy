@@ -110,13 +110,13 @@ def detectChanges(Map config) {
     def infraChanges = false
     
     fileList.each { file ->
-        if (file == "app.py") {
+        if (file.endsWith("app.py")) {
             appChanges.add("default")
-        } else if (file == "app_1.py") {
+        } else if (file.endsWith("app_1.py")) {
             appChanges.add("app1")
-        } else if (file == "app_2.py") {
+        } else if (file.endsWith("app_2.py")) {
             appChanges.add("app2")
-        } else if (file == "app_3.py") {
+        } else if (file.endsWith("app_3.py")) {
             appChanges.add("app3")
         } else {
             // Any other file is considered an infra change
@@ -124,10 +124,7 @@ def detectChanges(Map config) {
         }
     }
     
-    if (infraChanges) {
-        echo "✅ Infra changes detected, running full deployment."
-        env.EXECUTION_TYPE = 'FULL_DEPLOY'
-    } else if (appChanges.size() > 0) {
+    if (appChanges.size() > 0 && !infraChanges) {
         echo "🚀 Detected app changes: ${appChanges}, executing App Deploy."
         env.EXECUTION_TYPE = 'APP_DEPLOY'
         
@@ -145,7 +142,7 @@ def detectChanges(Map config) {
         
         echo "🔍 Setting APP_NAME to: ${env.APP_NAME ?: 'default'}"
     } else {
-        echo "⚠️ No recognized changes detected. Defaulting to FULL_DEPLOY."
+        echo "✅ Infra changes detected, running full deployment."
         env.EXECUTION_TYPE = 'FULL_DEPLOY'
     }
 }
