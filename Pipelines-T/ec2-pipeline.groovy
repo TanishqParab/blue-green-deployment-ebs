@@ -25,7 +25,7 @@ pipeline {
         string(
             name: 'APP_NAME',
             defaultValue: '',
-            description: 'Application name for multi-app deployment (e.g., app_1, app_2, app_3). Leave empty for default app.'
+            description: 'Application name for multi-app deployment (e.g., app1, app2, app3). Leave empty for default app.'
         )
     }
     
@@ -79,14 +79,14 @@ pipeline {
                         
                         // Check for app_1.py, app_2.py, or app_3.py
                         if (changedFiles.contains("app_1.py")) {
-                            env.APP_NAME = "app_1"
-                            echo "Detected changes in app_1.py, setting APP_NAME to app_1"
+                            env.APP_NAME = "app1"
+                            echo "Detected changes in app_1.py, setting APP_NAME to app1"
                         } else if (changedFiles.contains("app_2.py")) {
-                            env.APP_NAME = "app_2"
-                            echo "Detected changes in app_2.py, setting APP_NAME to app_2"
+                            env.APP_NAME = "app2"
+                            echo "Detected changes in app_2.py, setting APP_NAME to app2"
                         } else if (changedFiles.contains("app_3.py")) {
-                            env.APP_NAME = "app_3"
-                            echo "Detected changes in app_3.py, setting APP_NAME to app_3"
+                            env.APP_NAME = "app3"
+                            echo "Detected changes in app_3.py, setting APP_NAME to app3"
                         } else if (changedFiles.contains("app.py")) {
                             env.APP_NAME = ""
                             echo "Detected changes in app.py, using default app"
@@ -162,7 +162,7 @@ pipeline {
                     if (params.MANUAL_BUILD != 'DESTROY') {
                         if (!env.APP_NAME || env.APP_NAME.trim() == '') {
                             // Deploy all apps if no specific app is provided
-                            def appNames = ["app_1", "app_2", "app_3"]
+                            def appNames = ["app1", "app2", "app3"]
                             echo "No specific app name provided, deploying all apps: ${appNames}"
                             
                             appNames.each { appName ->
@@ -242,8 +242,6 @@ pipeline {
                         repoBranch: env.REPO_BRANCH,
                         appName: env.APP_NAME
                     ]
-
-
                     
                     // Call the rollback pipeline implementation
                     rollbackPipelineImpl.initialize(config)
