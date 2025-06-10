@@ -93,25 +93,59 @@ def registerInstancesToTargetGroups(Map config) {
 def detectChanges(Map config) {
     echo "🔍 Detecting changes for EC2 implementation..."
 
-    def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim().split('\n')
-    echo "Changed files: ${changedFiles}"
-
-            def gitDiff = sh(
-            script: "git diff --name-only HEAD~1 HEAD",
-            returnStdout: true
-        ).trim()
-
-        if (gitDiff) {
-            changedFiles = gitDiff.split('\n')
-            echo "📝 Changed files: ${changedFiles.join(', ')}"
-            echo "🚀 Change(s) detected. Triggering deployment."
+    def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
+    
+    if (!changedFiles) {
+        echo "No changes detected."
+        env.EXECUTION_TYPE = 'SKIP'
+        return
+    }
+    
+    def fileList = changedFiles.split('\n')
+    echo "📝 Changed files: ${fileList.join(', ')}"
+    echo "🚀 Change(s) detected. Triggering deployment."
+    
+    // Check for app file changes
+    def appChanges = []
+    def infraChanges = false
+    
+    fileList.each { file ->
+        if (file == "app.py") {
+            appChanges.add("default")
+        } else if (file == "app_1.py") {
+            appChanges.add("app1")
+        } else if (file == "app_2.py") {
+            appChanges.add("app2")
+        } else if (file == "app_3.py") {
+            appChanges.add("app3")
+        } else {
+            // Any other file is considered an infra change
+            infraChanges = true
         }
-
-    if (onlyAppChange) {
-        echo "🚀 Detected only app.py change, executing App Deploy."
+    }
+    
+    if (infraChanges) {
+        echo "✅ Infra changes detected, running full deployment."
+        env.EXECUTION_TYPE = 'FULL_DEPLOY'
+    } else if (appChanges.size() > 0) {
+        echo "🚀 Detected app changes: ${appChanges}, executing App Deploy."
         env.EXECUTION_TYPE = 'APP_DEPLOY'
+        
+        // If multiple app files changed, use the first one
+        if (appChanges.size() > 1) {
+            echo "⚠️ Multiple app files changed. Using the first one: ${appChanges[0]}"
+        }
+        
+        // Set the APP_NAME environment variable based on the changed app file
+        if (appChanges[0] == "default") {
+            env.APP_NAME = ""
+        } else {
+            env.APP_NAME = appChanges[0]
+        }
+        
+        echo "🔍 Setting APP_NAME to: ${env.APP_NAME ?: 'default'}"
     } else {
-        echo "✅ Infra changes detected (excluding app.py), running full deployment."
+        echo "⚠️ No recognized changes detected. Defaulting to FULL_DEPLOY."
         env.EXECUTION_TYPE = 'FULL_DEPLOY'
     }
 }
@@ -161,14 +195,16 @@ def updateApplication(Map config) {
     
     // Get app name from config or default to empty string (for backward compatibility)
     def appName = config.appName ?: ""
-    def blueInstanceTag = appName ? "Blue-Instance-${appName}" : "Blue-Instance"
-    def greenInstanceTag = appName ? "Green-Instance-${appName}" : "Green-Instance"
+    
+    // Use custom tag format if provided, otherwise use default format
+    def blueInstanceTag = config.blueTag ?: (appName ? "${appName}-blue-instance" : "Blue-Instance")
+    def greenInstanceTag = config.greenTag ?: (appName ? "${appName}-green-instance" : "Green-Instance")
     
     echo "🔍 Using instance tags: ${blueInstanceTag} and ${greenInstanceTag}"
 
     def blueInstanceId = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueInstanceTag}" "Name=instance-state-name,Values=running" \
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueInstanceTag}" "Name=instance-state-name,Values=running" \\
         --query 'Reservations[0].Instances[0].InstanceId' --output text
         """,
         returnStdout: true
@@ -176,13 +212,14 @@ def updateApplication(Map config) {
 
     def greenInstanceId = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenInstanceTag}" "Name=instance-state-name,Values=running" \
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenInstanceTag}" "Name=instance-state-name,Values=running" \\
         --query 'Reservations[0].Instances[0].InstanceId' --output text
         """,
         returnStdout: true
     ).trim()
 
-    if (!blueInstanceId || !greenInstanceId) {
+    // Check if instances exist before proceeding
+    if (!blueInstanceId || blueInstanceId == "None" || !greenInstanceId || greenInstanceId == "None") {
         error "❌ Blue or Green instance not found! Check AWS console."
     }
 
@@ -190,10 +227,15 @@ def updateApplication(Map config) {
     echo "✅ Green Instance ID: ${greenInstanceId}"
 
     echo "❌ Deregistering old instances before re-registering..."
-    sh """
-        aws elbv2 deregister-targets --target-group-arn ${env.BLUE_TG_ARN} --targets Id=${greenInstanceId}
-        aws elbv2 deregister-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${blueInstanceId}
-    """
+    try {
+        sh """
+            aws elbv2 deregister-targets --target-group-arn ${env.BLUE_TG_ARN} --targets Id=${greenInstanceId}
+            aws elbv2 deregister-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${blueInstanceId}
+        """
+    } catch (Exception e) {
+        echo "⚠️ Warning during deregistration: ${e.message}"
+        echo "⚠️ Continuing with registration..."
+    }
     sleep(10) // Allow time for deregistration
 
     echo "✅ Registering instances to the correct target groups..."
@@ -205,11 +247,12 @@ def updateApplication(Map config) {
     echo "✅ Instances successfully registered to correct target groups!"
 }
 
+
 def deployToBlueInstance(Map config) {
     // Get app name from config or default to empty string (for backward compatibility)
     def appName = config.appName ?: ""
-    def blueTargetGroupName = appName ? "${config.blueTargetGroupName}-${appName}" : config.blueTargetGroupName
-    def blueTag = appName ? "${config.blueTag}-${appName}" : config.blueTag
+    def blueTargetGroupName = appName ? "blue-tg-${appName}" : (config.blueTargetGroupName ?: "blue-tg")
+    def blueTag = appName ? "${appName}-blue-instance" : (config.blueTag ?: "Blue-Instance")
     
     echo "🔍 Using blue target group name: ${blueTargetGroupName}"
     echo "🔍 Using blue instance tag: ${blueTag}"
@@ -217,9 +260,9 @@ def deployToBlueInstance(Map config) {
     // 1. Dynamically get ALB ARN by ALB name (or partial match)
     def albArn = sh(
         script: """
-        aws elbv2 describe-load-balancers \
-            --names "${config.albName}" \
-            --query 'LoadBalancers[0].LoadBalancerArn' \
+        aws elbv2 describe-load-balancers \\
+            --names "${config.albName}" \\
+            --query 'LoadBalancers[0].LoadBalancerArn' \\
             --output text
         """,
         returnStdout: true
@@ -233,9 +276,9 @@ def deployToBlueInstance(Map config) {
     // 2. Dynamically get Blue Target Group ARN filtered by ALB ARN and TG name/tag
     def blueTGArn = sh(
         script: """
-        aws elbv2 describe-target-groups \
-            --load-balancer-arn ${albArn} \
-            --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" \
+        aws elbv2 describe-target-groups \\
+            --load-balancer-arn ${albArn} \\
+            --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" \\
             --output text
         """,
         returnStdout: true
@@ -249,7 +292,7 @@ def deployToBlueInstance(Map config) {
     // 3. Get Blue Instance IP
     def blueInstanceIP = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
         """,
         returnStdout: true
@@ -276,7 +319,7 @@ def deployToBlueInstance(Map config) {
 
     def blueInstanceId = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
         --query 'Reservations[0].Instances[0].InstanceId' --output text
         """,
         returnStdout: true
@@ -290,10 +333,10 @@ def deployToBlueInstance(Map config) {
         sleep(time: 10, unit: 'SECONDS')
         healthStatus = sh(
             script: """
-            aws elbv2 describe-target-health \
-            --target-group-arn ${blueTGArn} \
-            --targets Id=${blueInstanceId} \
-            --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+            aws elbv2 describe-target-health \\
+            --target-group-arn ${blueTGArn} \\
+            --targets Id=${blueInstanceId} \\
+            --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
             --output text
             """,
             returnStdout: true
@@ -320,101 +363,107 @@ def switchTraffic(Map config) {
     echo "🔍 Using ALB name: ${albName}"
     echo "🔍 Using target groups: ${blueTgName} and ${greenTgName}"
     
-    echo "🔄 Fetching ALB ARN..."
-    def albArn = sh(script: """
-        aws elbv2 describe-load-balancers --names ${albName} \
-        --query "LoadBalancers[0].LoadBalancerArn" --output text
-    """, returnStdout: true).trim()
+    try {
+        echo "🔄 Fetching ALB ARN..."
+        def albArn = sh(script: """
+            aws elbv2 describe-load-balancers --names ${albName} \\
+            --query "LoadBalancers[0].LoadBalancerArn" --output text
+        """, returnStdout: true).trim()
 
-    if (!albArn) {
-        error "❌ Failed to retrieve ALB ARN!"
+        if (!albArn) {
+            error "❌ Failed to retrieve ALB ARN!"
+        }
+        echo "✅ ALB ARN: ${albArn}"
+
+        echo "🔄 Fetching Listener ARN..."
+        def listenerArn = sh(script: """
+            aws elbv2 describe-listeners --load-balancer-arn ${albArn} \\
+            --query "Listeners[0].ListenerArn" --output text
+        """, returnStdout: true).trim()
+
+        if (!listenerArn) {
+            error "❌ Listener ARN not found!"
+        }
+        echo "✅ Listener ARN: ${listenerArn}"
+
+        echo "🔄 Fetching Blue Target Group ARN..."
+        def blueTgArn = sh(script: """
+            aws elbv2 describe-target-groups --names ${blueTgName} \\
+            --query "TargetGroups[0].TargetGroupArn" --output text
+        """, returnStdout: true).trim()
+
+        if (!blueTgArn) {
+            error "❌ Blue Target Group ARN not found!"
+        }
+        echo "✅ Blue TG ARN: ${blueTgArn}"
+
+        echo "🔄 Fetching Green Target Group ARN..."
+        def greenTgArn = sh(script: """
+            aws elbv2 describe-target-groups --names ${greenTgName} \\
+            --query "TargetGroups[0].TargetGroupArn" --output text
+        """, returnStdout: true).trim()
+
+        if (!greenTgArn) {
+            error "❌ Green Target Group ARN not found!"
+        }
+        echo "✅ Green TG ARN: ${greenTgArn}"
+
+        // Determine which target group to route traffic to (default to BLUE if not specified)
+        def targetEnv = config.targetEnv?.toUpperCase() ?: "BLUE"
+        def targetTgArn = (targetEnv == "BLUE") ? blueTgArn : greenTgArn
+        
+        echo "🔍 Checking for existing priority 10 rules..."
+        def ruleArn = sh(script: """
+            aws elbv2 describe-rules --listener-arn '${listenerArn}' \\
+            --query "Rules[?Priority=='10'].RuleArn | [0]" --output text
+        """, returnStdout: true).trim()
+
+        if (ruleArn && ruleArn != "None") {
+            echo "🔄 Deleting existing rule with Priority 10..."
+            sh "aws elbv2 delete-rule --rule-arn '${ruleArn}'"
+            echo "✅ Deleted rule ${ruleArn}"
+        } else {
+            echo "ℹ️ No existing rule at priority 10"
+        }
+
+        echo "🔁 Switching traffic to ${targetEnv}..."
+        sh """
+            aws elbv2 modify-listener --listener-arn ${listenerArn} \\
+            --default-actions Type=forward,TargetGroupArn=${targetTgArn}
+        """
+
+        def currentTargetArn = sh(script: """
+            aws elbv2 describe-listeners --listener-arns ${listenerArn} \\
+            --query "Listeners[0].DefaultActions[0].TargetGroupArn" --output text
+        """, returnStdout: true).trim()
+
+        if (currentTargetArn != targetTgArn) {
+            error "❌ Verification failed! Listener not pointing to ${targetEnv} TG."
+        }
+
+        echo "✅✅✅ Traffic successfully routed to ${targetEnv} TG!"
+    } catch (Exception e) {
+        echo "⚠️ Error switching traffic: ${e.message}"
+        throw e
     }
-    echo "✅ ALB ARN: ${albArn}"
-
-    echo "🔄 Fetching Listener ARN..."
-    def listenerArn = sh(script: """
-        aws elbv2 describe-listeners --load-balancer-arn ${albArn} \
-        --query "Listeners[0].ListenerArn" --output text
-    """, returnStdout: true).trim()
-
-    if (!listenerArn) {
-        error "❌ Listener ARN not found!"
-    }
-    echo "✅ Listener ARN: ${listenerArn}"
-
-    echo "🔄 Fetching Blue Target Group ARN..."
-    def blueTgArn = sh(script: """
-        aws elbv2 describe-target-groups --names ${blueTgName} \
-        --query "TargetGroups[0].TargetGroupArn" --output text
-    """, returnStdout: true).trim()
-
-    if (!blueTgArn) {
-        error "❌ Blue Target Group ARN not found!"
-    }
-    echo "✅ Blue TG ARN: ${blueTgArn}"
-
-    echo "🔄 Fetching Green Target Group ARN..."
-    def greenTgArn = sh(script: """
-        aws elbv2 describe-target-groups --names ${greenTgName} \
-        --query "TargetGroups[0].TargetGroupArn" --output text
-    """, returnStdout: true).trim()
-
-    if (!greenTgArn) {
-        error "❌ Green Target Group ARN not found!"
-    }
-    echo "✅ Green TG ARN: ${greenTgArn}"
-
-    // Determine which target group to route traffic to (default to BLUE if not specified)
-    def targetEnv = config.targetEnv?.toUpperCase() ?: "BLUE"
-    def targetTgArn = (targetEnv == "BLUE") ? blueTgArn : greenTgArn
-    
-    echo "🔍 Checking for existing priority 10 rules..."
-    def ruleArn = sh(script: """
-        aws elbv2 describe-rules --listener-arn '${listenerArn}' \
-        --query "Rules[?Priority=='10'].RuleArn | [0]" --output text
-    """, returnStdout: true).trim()
-
-    if (ruleArn && ruleArn != "None") {
-        echo "🔄 Deleting existing rule with Priority 10..."
-        sh "aws elbv2 delete-rule --rule-arn '${ruleArn}'"
-        echo "✅ Deleted rule ${ruleArn}"
-    } else {
-        echo "ℹ️ No existing rule at priority 10"
-    }
-
-    echo "🔁 Switching traffic to ${targetEnv}..."
-    sh """
-        aws elbv2 modify-listener --listener-arn ${listenerArn} \
-        --default-actions Type=forward,TargetGroupArn=${targetTgArn}
-    """
-
-    def currentTargetArn = sh(script: """
-        aws elbv2 describe-listeners --listener-arns ${listenerArn} \
-        --query "Listeners[0].DefaultActions[0].TargetGroupArn" --output text
-    """, returnStdout: true).trim()
-
-    if (currentTargetArn != targetTgArn) {
-        error "❌ Verification failed! Listener not pointing to ${targetEnv} TG."
-    }
-
-    echo "✅✅✅ Traffic successfully routed to ${targetEnv} TG!"
 }
+
 
 def tagSwapInstances(Map config) {
     echo "🌐 Discovering AWS resources..."
     
     // Get app name from config or default to empty string (for backward compatibility)
     def appName = config.appName ?: ""
-    def blueTag = appName ? "${config.blueTag}-${appName}" : config.blueTag
-    def greenTag = appName ? "${config.greenTag}-${appName}" : config.greenTag
+    def blueTag = appName ? "${appName}-blue-instance" : (config.blueTag ?: "Blue-Instance")
+    def greenTag = appName ? "${appName}-green-instance" : (config.greenTag ?: "Green-Instance")
     
     echo "🔍 Using instance tags: ${blueTag} and ${greenTag}"
 
     def instances = sh(script: """
-        aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=${blueTag},${greenTag}" \
-                    "Name=instance-state-name,Values=running" \
-            --query "Reservations[].Instances[].[InstanceId,Tags[?Key=='Name'].Value | [0]]" \
+        aws ec2 describe-instances \\
+            --filters "Name=tag:Name,Values=${blueTag},${greenTag}" \\
+                    "Name=instance-state-name,Values=running" \\
+            --query "Reservations[].Instances[].[InstanceId,Tags[?Key=='Name'].Value | [0]]" \\
             --output json
     """, returnStdout: true).trim()
 
