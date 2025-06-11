@@ -281,7 +281,18 @@ def fetchResources(Map config) {
 
 @NonCPS
 def parseJsonString(String json) {
-    new JsonSlurper().parseText(json)
+    def parsed = new JsonSlurper().parseText(json)
+    
+    // Handle different types of JSON responses
+    if (parsed instanceof List) {
+        return parsed
+    } else if (parsed instanceof Map) {
+        def safeMap = [:]
+        safeMap.putAll(parsed)
+        return safeMap
+    } else {
+        return parsed
+    }
 }
 
 
