@@ -18,12 +18,15 @@ def deployToBlueService(Map config) {
         ).trim()
         
         // Build and push Docker image for the specified app with only app_*-latest tag
+        // Build and push Docker image for the specified app with only app_*-latest tag
         sh """
             aws ecr get-login-password --region ${config.awsRegion} | docker login --username AWS --password-stdin ${ecrUri}
             cd ${config.tfWorkingDir}/modules/ecs/scripts
             docker build -t ${config.ecrRepoName}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
+            docker tag ${config.ecrRepoName}:${appName}-latest ${ecrUri}:${appName}-latest
             docker push ${ecrUri}:${appName}-latest
         """
+        
         
         // Get services JSON and find blue service
         def servicesJson = sh(
