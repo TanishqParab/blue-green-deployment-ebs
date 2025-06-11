@@ -17,16 +17,11 @@ def deployToBlueService(Map config) {
             returnStdout: true
         ).trim()
         
-        // Build and push Docker image for the specified app
+        // Build and push Docker image for the specified app with only app_*-latest tag
         sh """
             aws ecr get-login-password --region ${config.awsRegion} | docker login --username AWS --password-stdin ${ecrUri}
             cd ${config.tfWorkingDir}/modules/ecs/scripts
-            docker build -t ${config.ecrRepoName}:${appName} --build-arg APP_NAME=${appSuffix} .
-            docker tag ${config.ecrRepoName}:${appName} ${ecrUri}:${appName}
-            docker push ${ecrUri}:${appName}
-            
-            # Also tag as app-specific latest
-            docker tag ${config.ecrRepoName}:${appName} ${ecrUri}:${appName}-latest
+            docker build -t ${config.ecrRepoName}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
             docker push ${ecrUri}:${appName}-latest
         """
         
@@ -38,15 +33,13 @@ def deployToBlueService(Map config) {
         
         def serviceArns = initialDeploymentParseJson(servicesJson).serviceArns
         
-        // Look for app-specific blue service first
-        def blueServiceArn = serviceArns.find { it.toLowerCase().contains("blue-service-${appSuffix}") }
-        
-        // Fall back to default blue service if app-specific not found
-        if (!blueServiceArn) {
-            blueServiceArn = serviceArns.find { it.toLowerCase().contains("blue-service") }
-        }
+        // Look for app-specific blue service with exact naming pattern: app1-blue-service
+        def blueServiceName = "app${appSuffix}-blue-service"
+        def blueServiceArn = serviceArns.find { it.toLowerCase().contains(blueServiceName.toLowerCase()) }
         
         if (!blueServiceArn) {
+            echo "⚠️ Could not find service ${blueServiceName}. Listing all services:"
+            sh "aws ecs list-services --cluster blue-green-cluster --query 'serviceArns[*]' --output table"
             error "❌ Could not find blue service in cluster blue-green-cluster"
         }
         
@@ -93,21 +86,22 @@ def deployToBlueService(Map config) {
             --region ${config.awsRegion}
         """
         
-        // Look for app-specific target group
-        def blueTgName = "blue-tg-${appSuffix}"
+        // Use the exact target group naming pattern you specified
+        def blueTgName = "blue-tg-app${appSuffix}"
+        
+        echo "Looking for target group: ${blueTgName}"
         def blueTgArn = sh(
             script: "aws elbv2 describe-target-groups --names ${blueTgName} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo ''",
             returnStdout: true
         ).trim()
         
-        // Fall back to default target group if app-specific not found
-        if (!blueTgArn) {
-            blueTgName = "blue-tg"
-            blueTgArn = sh(
-                script: "aws elbv2 describe-target-groups --names ${blueTgName} --query 'TargetGroups[0].TargetGroupArn' --output text",
-                returnStdout: true
-            ).trim()
+        if (!blueTgArn || blueTgArn == "None") {
+            echo "⚠️ Could not find target group ${blueTgName}. Listing all target groups:"
+            sh "aws elbv2 describe-target-groups --query 'TargetGroups[*].TargetGroupName' --output table"
+            error "❌ Could not find blue target group ${blueTgName}"
         }
+        
+        echo "Found target group: ${blueTgName}"
         
         // Configure ALB to route to blue target group
         sh """
