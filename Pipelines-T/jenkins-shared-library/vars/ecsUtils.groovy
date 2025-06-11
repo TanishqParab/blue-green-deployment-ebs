@@ -149,7 +149,7 @@ def fetchResources(Map config) {
         result.APP_SUFFIX = appSuffix
         
         result.ECS_CLUSTER = sh(
-            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | awk -F'/' '{print \\\\$2}'",
+            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
             returnStdout: true
         ).trim()
 
