@@ -153,6 +153,7 @@ def fetchResources(Map config) {
             returnStdout: true
         ).trim()
 
+
         // Try to get app-specific target groups first, fall back to default if not found
         result.BLUE_TG_ARN = sh(
             script: "aws elbv2 describe-target-groups --names blue-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
