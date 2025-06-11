@@ -26,6 +26,9 @@ def deployToBlueService(Map config) {
             # Navigate to the directory with Dockerfile
             cd ${config.tfWorkingDir}/modules/ecs/scripts
             
+            # Make sure we're using the right app file
+            cp app_${appSuffix}.py app.py
+            
             # Build the Docker image
             docker build -t ${config.ecrRepoName} --build-arg APP_NAME=${appSuffix} .
             
@@ -184,9 +187,17 @@ def deployToBlueService(Map config) {
 @NonCPS
 def initialDeploymentParseJson(String jsonText) {
     def parsed = new JsonSlurper().parseText(jsonText)
-    def safeMap = [:]
-    safeMap.putAll(parsed)
-    return safeMap
+    
+    // Handle different types of JSON responses
+    if (parsed instanceof List) {
+        return parsed
+    } else if (parsed instanceof Map) {
+        def safeMap = [:]
+        safeMap.putAll(parsed)
+        return safeMap
+    } else {
+        return parsed
+    }
 }
 
 @NonCPS
