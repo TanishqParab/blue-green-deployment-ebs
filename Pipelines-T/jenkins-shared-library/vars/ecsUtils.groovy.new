@@ -1,0 +1,279 @@
+// vars/ecsUtils.groovy
+
+def waitForServices(Map config) {
+    echo "Waiting for ECS services to stabilize..."
+    sleep(60)  // Give time for services to start
+    
+    // Get app name from config or default to app_1
+    def appName = config.appName ?: "app_1"
+    def appSuffix = appName.replace("app_", "")
+    
+    // Get the cluster name
+    def cluster = sh(
+        script: "terraform -chdir=${config.tfWorkingDir} output -raw ecs_cluster_id",
+        returnStdout: true
+    ).trim()
+    
+    // Check ECS service status for app-specific service if it exists
+    def serviceName = "blue-service-${appSuffix}"
+    def serviceExists = sh(
+        script: """
+            aws ecs describe-services --cluster ${cluster} --services ${serviceName} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+        """,
+        returnStdout: true
+    ).trim()
+    
+    if (serviceExists == "MISSING" || serviceExists == "INACTIVE") {
+        serviceName = "blue-service"
+        echo "Using default service name: ${serviceName}"
+    } else {
+        echo "Using app-specific service name: ${serviceName}"
+    }
+    
+    sh """
+    aws ecs describe-services --cluster ${cluster} --services ${serviceName} --query 'services[0].{Status:status,DesiredCount:desiredCount,RunningCount:runningCount}' --output table
+    """
+    
+    // Get the ALB DNS name
+    def albDns = sh(
+        script: "terraform -chdir=${config.tfWorkingDir} output -raw alb_dns_name",
+        returnStdout: true
+    ).trim()
+    
+    // Determine health endpoint based on app
+    def healthEndpoint = appSuffix == "1" ? "/health" : "/app${appSuffix}/health"
+    
+    echo "Application is accessible at: http://${albDns}${appSuffix == "1" ? "" : "/app" + appSuffix}"
+    
+    // Test the application
+    sh """
+    # Wait for the application to be fully available
+    sleep 30
+    
+    # Test the health endpoint
+    curl -f http://${albDns}${healthEndpoint} || echo "Health check failed but continuing"
+    """
+}
+
+def cleanResources(Map config) {
+    if (params.MANUAL_BUILD != 'DESTROY' || config.implementation != 'ecs') {
+        echo "⚠️ Skipping ECR cleanup as conditions not met (either not DESTROY or not ECS)."
+        return
+    }
+
+    echo "🧹 Cleaning up ECR repository before destruction..."
+
+    try {
+        // Check if the ECR repository exists
+        def ecrRepoExists = sh(
+            script: """
+                aws ecr describe-repositories --repository-names ${config.ecrRepoName} --region ${config.awsRegion} &>/dev/null && echo 0 || echo 1
+            """,
+            returnStdout: true
+        ).trim() == "0"
+
+        if (ecrRepoExists) {
+            echo "🔍 Fetching all images in repository ${config.ecrRepoName}..."
+
+            def imagesOutput = sh(
+                script: """
+                    aws ecr describe-images --repository-name ${config.ecrRepoName} --output json
+                """,
+                returnStdout: true
+            ).trim()
+
+            def imagesJson = readJSON text: imagesOutput
+            def imageDetails = imagesJson.imageDetails
+
+            echo "Found ${imageDetails.size()} images in repository"
+
+            imageDetails.each { image ->
+                def digest = image.imageDigest
+                echo "Deleting image: ${digest}"
+                sh """
+                    aws ecr batch-delete-image \\
+                        --repository-name ${config.ecrRepoName} \\
+                        --image-ids imageDigest=${digest}
+                """
+            }
+
+            echo "✅ ECR repository cleanup completed."
+        } else {
+            echo "ℹ️ ECR repository ${config.ecrRepoName} not found, skipping cleanup"
+        }
+    } catch (Exception e) {
+        echo "⚠️ Warning: ECR cleanup encountered an issue: ${e.message}"
+    }
+}
+
+def detectChanges(Map config) {
+    echo "🔍 Detecting changes for ECS implementation..."
+
+    def changedFiles = []
+    try {
+        // Check for any file changes between last 2 commits
+        def gitDiff = sh(
+            script: "git diff --name-only HEAD~1 HEAD",
+            returnStdout: true
+        ).trim()
+
+        if (gitDiff) {
+            changedFiles = gitDiff.split('\n')
+            echo "📝 Changed files: ${changedFiles.join(', ')}"
+            echo "🚀 Change(s) detected. Triggering deployment."
+            env.DEPLOY_NEW_VERSION = 'true'
+        } else {
+            echo "📄 No changes detected between last two commits."
+            env.DEPLOY_NEW_VERSION = 'false'
+        }
+
+    } catch (Exception e) {
+        echo "⚠️ Could not determine changed files. Assuming change occurred to force deploy."
+        env.DEPLOY_NEW_VERSION = 'true'
+    }
+}
+
+import groovy.json.JsonSlurper
+
+def fetchResources(Map config) {
+    echo "🔄 Fetching ECS and ALB resources..."
+
+    def result = [:]
+
+    try {
+        // Get app name from config or default to app_1
+        def appName = config.appName ?: "app_1"
+        def appSuffix = appName.replace("app_", "")
+        
+        result.APP_NAME = appName
+        result.APP_SUFFIX = appSuffix
+        
+        result.ECS_CLUSTER = sh(
+            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | awk -F'/' '{print \\$2}'",
+            returnStdout: true
+        ).trim()
+
+        // Try to get app-specific target groups first, fall back to default if not found
+        result.BLUE_TG_ARN = sh(
+            script: "aws elbv2 describe-target-groups --names blue-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+            returnStdout: true
+        ).trim()
+
+        result.GREEN_TG_ARN = sh(
+            script: "aws elbv2 describe-target-groups --names green-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+            returnStdout: true
+        ).trim()
+
+        result.ALB_ARN = sh(
+            script: "aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text",
+            returnStdout: true
+        ).trim()
+
+        result.LISTENER_ARN = sh(
+            script: "aws elbv2 describe-listeners --load-balancer-arn ${result.ALB_ARN} --query 'Listeners[0].ListenerArn' --output text",
+            returnStdout: true
+        ).trim()
+
+        // Check for app-specific routing rule first
+        def appPathPattern = appSuffix == "1" ? "/" : "/app${appSuffix}/*"
+        
+        def ruleArn = sh(
+            script: """
+                aws elbv2 describe-rules --listener-arn ${result.LISTENER_ARN} \\
+                --query "Rules[?contains(Conditions[0].PathPatternConfig.Values,'${appPathPattern}')].RuleArn" \\
+                --output text
+            """,
+            returnStdout: true
+        ).trim()
+        
+        def liveTgArn = null
+        
+        if (ruleArn && ruleArn != "None") {
+            // Get target group from app-specific rule
+            liveTgArn = sh(
+                script: """
+                    aws elbv2 describe-rules --rule-arns ${ruleArn} \\
+                    --query 'Rules[0].Actions[0].ForwardConfig.TargetGroups[0].TargetGroupArn || Rules[0].Actions[0].TargetGroupArn' \\
+                    --output text
+                """,
+                returnStdout: true
+            ).trim()
+        } else {
+            // Fall back to default action if no app-specific rule exists
+            def targetGroupsJson = sh(
+                script: """
+                aws elbv2 describe-listeners --listener-arns ${result.LISTENER_ARN} \\
+                --query 'Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups' \\
+                --output json
+                """,
+                returnStdout: true
+            ).trim()
+
+            def targetGroups = parseJsonString(targetGroupsJson)
+
+            // Find the target group with the highest weight (>0)
+            def maxWeight = 0
+            if (targetGroups) {
+                targetGroups.each { tg ->
+                    if (tg.Weight > maxWeight) {
+                        maxWeight = tg.Weight
+                        liveTgArn = tg.TargetGroupArn
+                    }
+                }
+            }
+            
+            // Fallback: If all weights are zero, pick the first TG
+            if (liveTgArn == null && targetGroups?.size() > 0) {
+                liveTgArn = targetGroups[0].TargetGroupArn
+            }
+        }
+
+        if (liveTgArn == result.BLUE_TG_ARN) {
+            result.LIVE_ENV = "BLUE"
+            result.IDLE_ENV = "GREEN"
+            result.LIVE_TG_ARN = result.BLUE_TG_ARN
+            result.IDLE_TG_ARN = result.GREEN_TG_ARN
+            result.LIVE_SERVICE = "blue-service-${appSuffix}"
+            result.IDLE_SERVICE = "green-service-${appSuffix}"
+        } else if (liveTgArn == result.GREEN_TG_ARN) {
+            result.LIVE_ENV = "GREEN"
+            result.IDLE_ENV = "BLUE"
+            result.LIVE_TG_ARN = result.GREEN_TG_ARN
+            result.IDLE_TG_ARN = result.BLUE_TG_ARN
+            result.LIVE_SERVICE = "green-service-${appSuffix}"
+            result.IDLE_SERVICE = "blue-service-${appSuffix}"
+        } else {
+            error "❌ Live Target Group ARN (${liveTgArn}) does not match Blue or Green Target Groups."
+        }
+        
+        // Check if app-specific services exist, fall back to default if not
+        def liveServiceExists = sh(
+            script: """
+                aws ecs describe-services --cluster ${result.ECS_CLUSTER} --services ${result.LIVE_SERVICE} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+            """,
+            returnStdout: true
+        ).trim()
+        
+        if (liveServiceExists == "MISSING" || liveServiceExists == "INACTIVE") {
+            result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
+            result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
+            echo "⚠️ App-specific services not found, falling back to default service names"
+        }
+
+        echo "✅ ECS Cluster: ${result.ECS_CLUSTER}"
+        echo "✅ App Name: ${result.APP_NAME}"
+        echo "✅ Blue Target Group ARN: ${result.BLUE_TG_ARN}"
+        echo "✅ Green Target Group ARN: ${result.GREEN_TG_ARN}"
+        echo "✅ ALB ARN: ${result.ALB_ARN}"
+        echo "✅ Listener ARN: ${result.LISTENER_ARN}"
+        echo "✅ LIVE ENV: ${result.LIVE_ENV}"
+        echo "✅ IDLE ENV: ${result.IDLE_ENV}"
+        echo "✅ LIVE SERVICE: ${result.LIVE_SERVICE}"
+        echo "✅ IDLE SERVICE: ${result.IDLE_SERVICE}"
+
+        return result
+
+    } catch (Exception e) {
+        error "❌ Failed to fetch ECS resources: ${e.message}"
+    }
+}

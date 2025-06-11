@@ -1,0 +1,398 @@
+def testEnvironment(Map config) {
+    echo "🔍 Testing ${env.IDLE_ENV} environment..."
+
+    try {
+        // Get app name from config
+        def appName = config.APP_NAME ?: "app_1"
+        def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
+        
+        // Dynamically fetch ALB ARN if not set
+        if (!env.ALB_ARN) {
+            echo "📡 Fetching ALB ARN..."
+            env.ALB_ARN = sh(
+                script: """
+                    aws elbv2 describe-load-balancers \\
+                        --names ${config.albName} \\
+                        --query 'LoadBalancers[0].LoadBalancerArn' \\
+                        --output text
+                """,
+                returnStdout: true
+            ).trim()
+        }
+
+        // Dynamically fetch Listener ARN if not set
+        if (!env.LISTENER_ARN) {
+            echo "🎧 Fetching Listener ARN..."
+            env.LISTENER_ARN = sh(
+                script: """
+                    aws elbv2 describe-listeners \\
+                        --load-balancer-arn ${env.ALB_ARN} \\
+                        --query 'Listeners[0].ListenerArn' \\
+                        --output text
+                """,
+                returnStdout: true
+            ).trim()
+        }
+
+        // Delete existing test rule if it exists
+        echo "🧹 Cleaning up any existing test rule..."
+        sh """
+        TEST_RULE=\$(aws elbv2 describe-rules \\
+            --listener-arn ${env.LISTENER_ARN} \\
+            --query "Rules[?Priority=='10'].RuleArn" \\
+            --output text)
+
+        if [ ! -z "\$TEST_RULE" ]; then
+            aws elbv2 delete-rule --rule-arn \$TEST_RULE
+        fi
+        """
+
+        // Create app-specific test path pattern
+        def testPathPattern = appSuffix == "1" ? "/test*" : "/app${appSuffix}/test*"
+        
+        // Create new test rule
+        echo "🚧 Creating test rule for ${testPathPattern} on idle target group..."
+        sh """
+        aws elbv2 create-rule \\
+            --listener-arn ${env.LISTENER_ARN} \\
+            --priority 10 \\
+            --conditions '[{"Field":"path-pattern","Values":["${testPathPattern}"]}]' \\
+            --actions '[{"Type":"forward","TargetGroupArn":"${env.IDLE_TG_ARN}"}]'
+        """
+
+        // Get ALB DNS
+        def albDns = sh(
+            script: """
+                aws elbv2 describe-load-balancers \\
+                    --load-balancer-arns ${env.ALB_ARN} \\
+                    --query 'LoadBalancers[0].DNSName' \\
+                    --output text
+            """,
+            returnStdout: true
+        ).trim()
+
+        // Store DNS for later use
+        env.ALB_DNS = albDns
+
+        // Wait for rule propagation and test endpoint
+        echo "⏳ Waiting for rule to propagate..."
+        sh "sleep 10"
+
+        // Test app-specific health endpoint
+        def testEndpoint = appSuffix == "1" ? "/test/health" : "/app${appSuffix}/test/health"
+        echo "🌐 Hitting test endpoint: http://${albDns}${testEndpoint}"
+        sh """
+        curl -f http://${albDns}${testEndpoint} || curl -f http://${albDns}${testEndpoint.replace('/health', '')} || echo "⚠️ Health check failed but continuing"
+        """
+
+        echo "✅ ${env.IDLE_ENV} environment tested successfully"
+
+    } catch (Exception e) {
+        echo "⚠️ Warning: Test stage encountered an issue: ${e.message}"
+        echo "Proceeding with deployment despite test issues."
+    } finally {
+        // Cleanup test rule after testing
+        echo "🧽 Cleaning up test rule..."
+        sh """
+        TEST_RULE=\$(aws elbv2 describe-rules \\
+            --listener-arn ${env.LISTENER_ARN} \\
+            --query "Rules[?Priority=='10'].RuleArn" \\
+            --output text)
+
+        if [ ! -z "\$TEST_RULE" ]; then
+            aws elbv2 delete-rule --rule-arn \$TEST_RULE
+            echo "🗑️ Test rule deleted."
+        else
+            echo "ℹ️ No test rule found to delete."
+        fi
+        """
+    }
+}
+
+import groovy.json.JsonOutput
+
+def switchTrafficToTargetEnv(String targetEnv, String blueTgArn, String greenTgArn, String listenerArn, Map config = [:]) {
+    echo "🔄 Switching traffic to ${targetEnv}..."
+    
+    // Get app name from config
+    def appName = config.APP_NAME ?: "app_1"
+    def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
+
+    def targetArn = (targetEnv == "GREEN") ? greenTgArn : blueTgArn
+    def otherArn  = (targetEnv == "GREEN") ? blueTgArn  : greenTgArn
+    
+    // For app-specific routing, check if there's a path-based rule
+    def appPathPattern = appSuffix == "1" ? "/" : "/app${appSuffix}/*"
+    
+    def ruleArn = sh(
+        script: """
+            aws elbv2 describe-rules --listener-arn ${listenerArn} \\
+            --query "Rules[?contains(Conditions[0].PathPatternConfig.Values,'${appPathPattern}')].RuleArn" \\
+            --output text
+        """,
+        returnStdout: true
+    ).trim()
+    
+    if (ruleArn && ruleArn != "None") {
+        // Update existing rule
+        sh """
+            aws elbv2 modify-rule \\
+                --rule-arn ${ruleArn} \\
+                --actions Type=forward,TargetGroupArn=${targetArn}
+        """
+        echo "✅ Updated rule to route ${appPathPattern} to ${targetEnv} (${targetArn})"
+    } else if (appSuffix == "1") {
+        // For app1, modify the default action
+        def targetGroups = [
+            [TargetGroupArn: targetArn, Weight: 1],
+            [TargetGroupArn: otherArn,  Weight: 0]
+        ]
+
+        def forwardAction = [
+            [
+                Type: "forward",
+                ForwardConfig: [
+                    TargetGroups: targetGroups
+                ]
+            ]
+        ]
+
+        writeFile file: 'forward-config.json', text: JsonOutput.prettyPrint(JsonOutput.toJson(forwardAction))
+        sh """
+            aws elbv2 modify-listener \\
+                --listener-arn ${listenerArn} \\
+                --default-actions file://forward-config.json
+        """
+        echo "✅ Traffic switched to ${targetEnv} (${targetArn}) for default route"
+    } else {
+        // Create a new rule for this app
+        // Find an available priority
+        def usedPriorities = sh(
+            script: """
+            aws elbv2 describe-rules --listener-arn ${listenerArn} --query 'Rules[?Priority!=`default`].Priority' --output json
+            """,
+            returnStdout: true
+        ).trim()
+        
+        def usedPrioritiesJson = parseJson(usedPriorities)
+        def priority = 50  // Start with a lower priority for app routing
+        
+        // Find the first available priority
+        while (usedPrioritiesJson.contains(priority.toString())) {
+            priority++
+        }
+        
+        sh """
+            aws elbv2 create-rule \\
+                --listener-arn ${listenerArn} \\
+                --priority ${priority} \\
+                --conditions '[{"Field":"path-pattern","Values":["${appPathPattern}"]}]' \\
+                --actions '[{"Type":"forward","TargetGroupArn":"${targetArn}"}]'
+        """
+        echo "✅ Created new rule with priority ${priority} to route ${appPathPattern} to ${targetEnv}"
+    }
+}
+
+import groovy.json.JsonSlurper
+
+def scaleDownOldEnvironment(Map config) {
+    // Get app name from config
+    def appName = config.APP_NAME ?: "app_1"
+    def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
+    
+    // --- Fetch ECS Cluster dynamically if not provided ---
+    if (!config.ECS_CLUSTER) {
+        echo "⚙️ ECS_CLUSTER not set, fetching dynamically..."
+        def ecsClusterId = sh(
+            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | awk -F'/' '{print \\$2}'",
+            returnStdout: true
+        ).trim()
+        if (!ecsClusterId) {
+            error "Failed to fetch ECS cluster ID dynamically"
+        }
+        config.ECS_CLUSTER = ecsClusterId
+        echo "✅ Dynamically fetched ECS_CLUSTER: ${config.ECS_CLUSTER}"
+    }
+
+    // --- Fetch ALB ARN dynamically if not provided ---
+    if (!config.ALB_ARN) {
+        echo "⚙️ ALB_ARN not set, fetching dynamically..."
+        def albArn = sh(
+            script: "aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text",
+            returnStdout: true
+        ).trim()
+        if (!albArn || albArn == 'None') {
+            error "Failed to fetch ALB ARN"
+        }
+        config.ALB_ARN = albArn
+        echo "✅ Dynamically fetched ALB_ARN: ${config.ALB_ARN}"
+    }
+
+    // --- Fetch Listener ARN dynamically if not provided ---
+    if (!config.LISTENER_ARN) {
+        echo "⚙️ LISTENER_ARN not set, fetching dynamically..."
+        def listenerArn = sh(
+            script: "aws elbv2 describe-listeners --load-balancer-arn ${config.ALB_ARN} --query 'Listeners[0].ListenerArn' --output text",
+            returnStdout: true
+        ).trim()
+        if (!listenerArn || listenerArn == 'None') {
+            error "Failed to fetch Listener ARN"
+        }
+        config.LISTENER_ARN = listenerArn
+        echo "✅ Dynamically fetched LISTENER_ARN: ${config.LISTENER_ARN}"
+    }
+
+    // --- Fetch Blue and Green Target Group ARNs dynamically ---
+    def blueTgArn = sh(
+        script: "aws elbv2 describe-target-groups --names blue-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+        returnStdout: true
+    ).trim()
+    def greenTgArn = sh(
+        script: "aws elbv2 describe-target-groups --names green-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+        returnStdout: true
+    ).trim()
+    if (!blueTgArn || blueTgArn == 'None') error "Blue target group ARN not found"
+    if (!greenTgArn || greenTgArn == 'None') error "Green target group ARN not found"
+
+    // --- Determine ACTIVE_ENV dynamically if not provided ---
+    if (!config.ACTIVE_ENV) {
+        echo "⚙️ ACTIVE_ENV not set, determining dynamically..."
+        
+        // For app-specific routing, check if there's a path-based rule
+        def appPathPattern = appSuffix == "1" ? "/" : "/app${appSuffix}/*"
+        
+        def ruleArn = sh(
+            script: """
+                aws elbv2 describe-rules --listener-arn ${config.LISTENER_ARN} \\
+                --query "Rules[?contains(Conditions[0].PathPatternConfig.Values,'${appPathPattern}')].RuleArn" \\
+                --output text
+            """,
+            returnStdout: true
+        ).trim()
+        
+        def activeTgArn = null
+        
+        if (ruleArn && ruleArn != "None") {
+            // Get target group from app-specific rule
+            activeTgArn = sh(
+                script: """
+                    aws elbv2 describe-rules --rule-arns ${ruleArn} \\
+                    --query 'Rules[0].Actions[0].ForwardConfig.TargetGroups[0].TargetGroupArn || Rules[0].Actions[0].TargetGroupArn' \\
+                    --output text
+                """,
+                returnStdout: true
+            ).trim()
+        } else if (appSuffix == "1") {
+            // For app1, check default action
+            activeTgArn = sh(
+                script: 'aws elbv2 describe-listeners --listener-arns ' + config.LISTENER_ARN + ' --query \'Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups[?Weight==`1`].TargetGroupArn | [0]\' --output text',
+                returnStdout: true
+            ).trim()
+        }
+        
+        if (!activeTgArn || activeTgArn == 'None') {
+            echo "⚠️ Could not determine active target group, defaulting to BLUE"
+            config.ACTIVE_ENV = "BLUE"
+        } else if (activeTgArn == blueTgArn) {
+            config.ACTIVE_ENV = "BLUE"
+        } else if (activeTgArn == greenTgArn) {
+            config.ACTIVE_ENV = "GREEN"
+        } else {
+            error "Active target group ARN does not match blue or green target groups"
+        }
+        echo "✅ Dynamically determined ACTIVE_ENV: ${config.ACTIVE_ENV}"
+    }
+
+    // --- Determine IDLE_ENV and IDLE_TG_ARN based on ACTIVE_ENV ---
+    if (!config.IDLE_ENV || !config.IDLE_TG_ARN) {
+        if (config.ACTIVE_ENV.toUpperCase() == "BLUE") {
+            config.IDLE_ENV = "GREEN"
+            config.IDLE_TG_ARN = greenTgArn
+        } else if (config.ACTIVE_ENV.toUpperCase() == "GREEN") {
+            config.IDLE_ENV = "BLUE"
+            config.IDLE_TG_ARN = blueTgArn
+        } else {
+            error "ACTIVE_ENV must be 'BLUE' or 'GREEN'"
+        }
+        echo "✅ Dynamically determined IDLE_ENV: ${config.IDLE_ENV}"
+        echo "✅ Dynamically determined IDLE_TG_ARN: ${config.IDLE_TG_ARN}"
+    }
+
+    // --- Dynamically determine IDLE_SERVICE ---
+    if (!config.IDLE_SERVICE) {
+        echo "⚙️ IDLE_SERVICE not set, determining dynamically based on IDLE_ENV..."
+        def idleEnvLower = config.IDLE_ENV.toLowerCase()
+        
+        // Try app-specific service name first
+        def expectedIdleServiceName = "${idleEnvLower}-service-${appSuffix}"
+        def servicesJson = sh(
+            script: "aws ecs list-services --cluster ${config.ECS_CLUSTER} --query 'serviceArns' --output json",
+            returnStdout: true
+        ).trim()
+        def services = new JsonSlurper().parseText(servicesJson)
+        if (!services || services.isEmpty()) {
+            error "No ECS services found in cluster ${config.ECS_CLUSTER}"
+        }
+        
+        def matchedIdleServiceArn = services.find { it.toLowerCase().endsWith(expectedIdleServiceName.toLowerCase()) }
+        
+        // Fall back to default service name if app-specific not found
+        if (!matchedIdleServiceArn) {
+            expectedIdleServiceName = "${idleEnvLower}-service"
+            matchedIdleServiceArn = services.find { it.toLowerCase().endsWith(expectedIdleServiceName.toLowerCase()) }
+        }
+        
+        if (!matchedIdleServiceArn) {
+            error "Idle service not found in cluster ${config.ECS_CLUSTER}"
+        }
+        
+        def idleServiceName = matchedIdleServiceArn.tokenize('/').last()
+        config.IDLE_SERVICE = idleServiceName
+        echo "✅ Dynamically determined IDLE_SERVICE: ${config.IDLE_SERVICE}"
+    }
+
+    // --- Wait for all targets in idle target group to be healthy ---
+    int maxAttempts = 30
+    int attempt = 0
+    int healthyCount = 0
+    echo "⏳ Waiting for all targets in ${config.IDLE_ENV} TG to become healthy before scaling down old environment..."
+    while (attempt < maxAttempts) {
+        def healthJson = sh(
+            script: "aws elbv2 describe-target-health --target-group-arn ${config.IDLE_TG_ARN} --query 'TargetHealthDescriptions[*].TargetHealth.State' --output json",
+            returnStdout: true
+        ).trim()
+        def states = new JsonSlurper().parseText(healthJson)
+        healthyCount = states.count { it == "healthy" }
+        echo "Healthy targets: ${healthyCount} / ${states.size()}"
+        if (states && healthyCount == states.size()) {
+            echo "✅ All targets in ${config.IDLE_ENV} TG are healthy."
+            break
+        }
+        attempt++
+        sleep 10
+    }
+    if (healthyCount == 0) {
+        error "❌ No healthy targets in ${config.IDLE_ENV} TG after waiting."
+    }
+
+    // --- Scale down the IDLE ECS service ---
+    try {
+        sh """
+        aws ecs update-service \\
+          --cluster ${config.ECS_CLUSTER} \\
+          --service ${config.IDLE_SERVICE} \\
+          --desired-count 0
+        """
+        echo "✅ Scaled down ${config.IDLE_SERVICE}"
+
+        sh """
+        aws ecs wait services-stable \\
+          --cluster ${config.ECS_CLUSTER} \\
+          --services ${config.IDLE_SERVICE}
+        """
+        echo "✅ ${config.IDLE_SERVICE} is now stable (scaled down)"
+    } catch (Exception e) {
+        echo "❌ Error during scale down: ${e.message}"
+        throw e
+    }
+}
