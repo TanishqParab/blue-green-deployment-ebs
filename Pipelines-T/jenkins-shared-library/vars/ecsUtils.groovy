@@ -802,7 +802,7 @@ def scaleDownOldEnvironment(Map config) {
     if (!config.ECS_CLUSTER) {
         echo "⚙️ ECS_CLUSTER not set, fetching dynamically..."
         def ecsClusterId = sh(
-            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | awk -F'/' '{print \\$2}'",
+            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
             returnStdout: true
         ).trim()
         if (!ecsClusterId) {
