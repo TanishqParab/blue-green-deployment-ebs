@@ -17,12 +17,22 @@ def deployToBlueService(Map config) {
             returnStdout: true
         ).trim()
         
-        // Build and push Docker image for the specified app with only app_*-latest tag
+        // Build and push Docker image for the specified app with app_*-latest tag
+        // Using the exact same commands as your null resource
         sh """
+            # Authenticate Docker to ECR
             aws ecr get-login-password --region ${config.awsRegion} | docker login --username AWS --password-stdin ${ecrUri}
+            
+            # Navigate to the directory with Dockerfile
             cd ${config.tfWorkingDir}/modules/ecs/scripts
-            docker build -t ${config.ecrRepoName}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
-            docker tag ${config.ecrRepoName}:${appName}-latest ${ecrUri}:${appName}-latest
+            
+            # Build the Docker image
+            docker build -t ${config.ecrRepoName} --build-arg APP_NAME=${appSuffix} .
+            
+            # Tag the image with app-specific latest tag
+            docker tag ${config.ecrRepoName}:latest ${ecrUri}:${appName}-latest
+            
+            # Push the app-specific latest tag
             docker push ${ecrUri}:${appName}-latest
         """
         
@@ -150,7 +160,21 @@ def deployToBlueService(Map config) {
         // Wait for service to stabilize
         sh "aws ecs wait services-stable --cluster blue-green-cluster --services \"${blueService}\" --region ${config.awsRegion}"
         
-        echo "✅ Initial deployment of ${appName} completed successfully! Application is now accessible through the ALB."
+        // Get ALB DNS name to display in the output
+        def albDns = sh(
+            script: "aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].DNSName' --output text",
+            returnStdout: true
+        ).trim()
+        
+        // Display access information
+        if (appName == "app_1") {
+            echo "✅ Initial deployment of ${appName} completed successfully!"
+            echo "🌐 Application is accessible at: http://${albDns}/"
+        } else {
+            echo "✅ Initial deployment of ${appName} completed successfully!"
+            echo "🌐 Application is accessible at: http://${albDns}/app${appSuffix}/"
+        }
+        
     } catch (Exception e) {
         echo "❌ Initial deployment failed: ${e.message}"
         throw e
