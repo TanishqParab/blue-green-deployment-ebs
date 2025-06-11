@@ -18,7 +18,6 @@ def deployToBlueService(Map config) {
         ).trim()
         
         // Build and push Docker image for the specified app with only app_*-latest tag
-        // Build and push Docker image for the specified app with only app_*-latest tag
         sh """
             aws ecr get-login-password --region ${config.awsRegion} | docker login --username AWS --password-stdin ${ecrUri}
             cd ${config.tfWorkingDir}/modules/ecs/scripts
@@ -26,7 +25,6 @@ def deployToBlueService(Map config) {
             docker tag ${config.ecrRepoName}:${appName}-latest ${ecrUri}:${appName}-latest
             docker push ${ecrUri}:${appName}-latest
         """
-        
         
         // Get services JSON and find blue service
         def servicesJson = sh(
@@ -106,25 +104,27 @@ def deployToBlueService(Map config) {
         
         echo "Found target group: ${blueTgName}"
         
-        // Configure ALB to route to blue target group
-        sh """
-        # Get ALB and listener ARNs
-        ALB_ARN=\$(aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text)
-        LISTENER_ARN=\$(aws elbv2 describe-listeners --load-balancer-arn \$ALB_ARN --query 'Listeners[?Port==`80`].ListenerArn' --output text)
-        """
+        // Get ALB and listener ARNs directly into variables
+        def albArn = sh(
+            script: "aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text",
+            returnStdout: true
+        ).trim()
+        
+        def listenerArn = sh(
+            script: "aws elbv2 describe-listeners --load-balancer-arn ${albArn} --query 'Listeners[?Port==`80`].ListenerArn' --output text",
+            returnStdout: true
+        ).trim()
         
         // For app_1, use default action; for other apps, create path-based rules
         if (appName == "app_1") {
             sh """
             # Configure default action to route to Blue target group
-            aws elbv2 modify-listener --listener-arn \$LISTENER_ARN --default-actions Type=forward,TargetGroupArn=${blueTgArn}
+            aws elbv2 modify-listener --listener-arn ${listenerArn} --default-actions Type=forward,TargetGroupArn=${blueTgArn}
             """
         } else {
             // Find an available priority
             def usedPriorities = sh(
-                script: """
-                aws elbv2 describe-rules --listener-arn \$LISTENER_ARN --query 'Rules[?Priority!=`default`].Priority' --output json
-                """,
+                script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query 'Rules[?Priority!=`default`].Priority' --output json",
                 returnStdout: true
             ).trim()
             
@@ -139,7 +139,7 @@ def deployToBlueService(Map config) {
             // Create path-based rule for this app
             sh """
             aws elbv2 create-rule \\
-                --listener-arn \$LISTENER_ARN \\
+                --listener-arn ${listenerArn} \\
                 --priority ${priority} \\
                 --conditions '[{"Field":"path-pattern","Values":["/app${appSuffix}/*"]}]' \\
                 --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
