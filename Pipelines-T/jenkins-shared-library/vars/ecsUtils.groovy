@@ -596,17 +596,26 @@ def updateApplication(Map config) {
         echo "✅ Image pushed: ${env.IMAGE_URI}"
 
         // Step 6: Update ECS Service
+        // Step 6: Update ECS Service
         echo "Updating ${env.IDLE_ENV} service (${env.IDLE_SERVICE})..."
 
         def taskDefArn = sh(
             script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text",
             returnStdout: true
-        ).trim()
+        )?.trim()
+
+        if (!taskDefArn) {
+            error "❌ Failed to get task definition ARN for service ${env.IDLE_SERVICE}"
+        }
 
         def taskDefJsonText = sh(
             script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json",
             returnStdout: true
-        ).trim()
+        )?.trim()
+
+        if (!taskDefJsonText) {
+            error "❌ Failed to get task definition JSON for ARN ${taskDefArn}"
+        }
 
         // Update task definition with new image
         def newTaskDefJson = updateTaskDefImageAndSerialize(taskDefJsonText, env.IMAGE_URI, appName)
@@ -615,7 +624,11 @@ def updateApplication(Map config) {
         def newTaskDefArn = sh(
             script: "aws ecs register-task-definition --cli-input-json file://new-task-def-${appSuffix}.json --region ${env.AWS_REGION} --query 'taskDefinition.taskDefinitionArn' --output text",
             returnStdout: true
-        ).trim()
+        )?.trim()
+
+        if (!newTaskDefArn) {
+            error "❌ Failed to register new task definition"
+        }
 
         sh """
         aws ecs update-service \\
