@@ -449,9 +449,16 @@ def updateApplication(Map config) {
     echo "Running ECS update application logic..."
 
     try {
+        // Debug statements to check input parameters
+        echo "DEBUG: Received config: ${config}"
+        echo "DEBUG: APP_NAME from config: ${config.APP_NAME}"
+        
         // Get app name from config
         def appName = config.APP_NAME ?: "app_1"
         def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
+        
+        echo "DEBUG: Using appName: ${appName}"
+        echo "DEBUG: Using appSuffix: ${appSuffix}"
         
         echo "Updating application: ${appName}"
         
@@ -506,20 +513,33 @@ def updateApplication(Map config) {
 
         // Helper to get image tag for a service
         def getImageTagForService = { serviceName ->
-            def taskDefArn = sh(
-                script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text",
-                returnStdout: true
-            ).trim()
-
-            def taskDefJsonText = sh(
-                script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json",
-                returnStdout: true
-            ).trim()
-
-            def taskDefJson = parseJsonSafe(taskDefJsonText)
-            def image = taskDefJson.containerDefinitions[0].image
-            def imageTag = image.tokenize(':').last()
-            return imageTag
+            try {
+                def taskDefArn = sh(
+                    script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
+                    returnStdout: true
+                )?.trim()
+                
+                if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
+                    return ""
+                }
+                
+                def taskDefJsonText = sh(
+                    script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
+                    returnStdout: true
+                )?.trim()
+                
+                def taskDefJson = parseJsonSafe(taskDefJsonText)
+                if (!taskDefJson || !taskDefJson.containerDefinitions || taskDefJson.containerDefinitions.isEmpty()) {
+                    return ""
+                }
+                
+                def image = taskDefJson.containerDefinitions[0].image
+                def imageTag = image?.tokenize(':')?.last() ?: ""
+                return imageTag
+            } catch (Exception e) {
+                echo "⚠️ Error getting image tag for service ${serviceName}: ${e.message}"
+                return ""
+            }
         }
 
         def blueImageTag = getImageTagForService(blueService)
@@ -584,18 +604,20 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
+        // Use explicit imageTag variable to ensure consistency
+        def imageTag = "${appName}-latest"
+        
         sh """
             aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
             cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
-            docker build -t ${env.ECR_REPO_NAME}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
-            docker tag ${env.ECR_REPO_NAME}:${appName}-latest ${ecrUri}:${appName}-latest
-            docker push ${ecrUri}:${appName}-latest
+            docker build -t ${env.ECR_REPO_NAME}:${imageTag} --build-arg APP_NAME=${appSuffix} .
+            docker tag ${env.ECR_REPO_NAME}:${imageTag} ${ecrUri}:${imageTag}
+            docker push ${ecrUri}:${imageTag}
         """
 
-        env.IMAGE_URI = "${ecrUri}:${appName}-latest"
+        env.IMAGE_URI = "${ecrUri}:${imageTag}"
         echo "✅ Image pushed: ${env.IMAGE_URI}"
 
-        // Step 6: Update ECS Service
         // Step 6: Update ECS Service
         echo "Updating ${env.IDLE_ENV} service (${env.IDLE_SERVICE})..."
 
@@ -619,16 +641,57 @@ def updateApplication(Map config) {
             )?.trim()
             
             if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
-                error "❌ Could not find a task definition for either service"
+                // Use a specific task definition family based on environment and app
+                def taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
+                echo "⚠️ Using specific task definition family: ${taskDefFamily}"
+                
+                // Skip the ARN lookup and directly get the task definition JSON
+                taskDefArn = taskDefFamily
             }
         }
 
-        def taskDefJsonText = sh(
-            script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo ''",
-            returnStdout: true
-        )?.trim()
+        // Get the task definition JSON directly
+        def taskDefJsonText
+        try {
+            // Always use the task definition family name directly
+            def taskDefFamily
+            if (taskDefArn.startsWith("arn:")) {
+                // Extract family name from ARN if needed
+                def parts = taskDefArn.split("/")
+                if (parts.size() > 1) {
+                    taskDefFamily = parts[1].split(":")[0]
+                } else {
+                    taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
+                }
+            } else {
+                taskDefFamily = taskDefArn
+            }
+            
+            echo "Using task definition family: ${taskDefFamily}"
+            
+            taskDefJsonText = sh(
+                script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
+                returnStdout: true
+            )?.trim()
+            
+            // Test if it's valid JSON
+            def testJson = parseJsonSafe(taskDefJsonText)
+            if (!testJson || testJson.isEmpty()) {
+                throw new Exception("Invalid JSON")
+            }
+        } catch (Exception e) {
+            echo "⚠️ Error getting task definition JSON: ${e.message}, trying fallback"
+            // Direct fallback to known task definition family
+            def taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
+            echo "⚠️ Fallback to task definition family: ${taskDefFamily}"
+            
+            taskDefJsonText = sh(
+                script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
+                returnStdout: true
+            )?.trim()
+        }
 
-        if (!taskDefJsonText || taskDefJsonText == "null") {
+        if (!taskDefJsonText || taskDefJsonText == "null" || taskDefJsonText == "{}") {
             error "❌ Failed to get task definition JSON for ARN ${taskDefArn}"
         }
 
@@ -661,7 +724,6 @@ def updateApplication(Map config) {
         sh "aws ecs wait services-stable --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION}"
         echo "✅ Service ${env.IDLE_ENV} is stable"
 
-
     } catch (Exception e) {
         echo "❌ Error occurred during ECS update:\n${e}"
         e.printStackTrace()
@@ -671,31 +733,74 @@ def updateApplication(Map config) {
 
 @NonCPS
 def parseJsonSafe(String jsonText) {
-    def parsed = new JsonSlurper().parseText(jsonText)
-    def safeMap = [:]
-    safeMap.putAll(parsed)
-    return safeMap
+    try {
+        if (!jsonText || jsonText.trim().isEmpty() || jsonText.trim() == "null") {
+            return [:]
+        }
+        
+        // Check if the text is actually JSON and not an ARN or other string
+        if (!jsonText.trim().startsWith("{") && !jsonText.trim().startsWith("[")) {
+            return [:]
+        }
+        
+        def parsed = new JsonSlurper().parseText(jsonText)
+        def safeMap = [:]
+        safeMap.putAll(parsed)
+        return safeMap
+    } catch (Exception e) {
+        echo "⚠️ Error in parseJsonSafe: ${e.message}"
+        return [:]
+    }
 }
 
 @NonCPS
 def getJsonFieldSafe(String jsonText, String fieldName) {
-    def parsed = new JsonSlurper().parseText(jsonText)
-    return parsed?."${fieldName}"?.toString()
+    try {
+        if (!jsonText || jsonText.trim().isEmpty() || jsonText.trim() == "null") {
+            return null
+        }
+        
+        // Check if the text is actually JSON and not an ARN or other string
+        if (!jsonText.trim().startsWith("{") && !jsonText.trim().startsWith("[")) {
+            return null
+        }
+        
+        def parsed = new JsonSlurper().parseText(jsonText)
+        return parsed?."${fieldName}"?.toString()
+    } catch (Exception e) {
+        echo "⚠️ Error in getJsonFieldSafe: ${e.message}"
+        return null
+    }
 }
 
 @NonCPS
 def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appName) {
-    def taskDef = new JsonSlurper().parseText(jsonText)
-    ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
-     'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
-        taskDef.remove(field)
+    try {
+        // Validate input
+        if (!jsonText || jsonText.trim().isEmpty() || !jsonText.trim().startsWith("{")) {
+            throw new Exception("Invalid JSON input: ${jsonText}")
+        }
+        
+        def taskDef = new JsonSlurper().parseText(jsonText)
+        ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
+         'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
+            taskDef.remove(field)
+        }
+        
+        // Use the provided image URI directly (already app-specific)
+        if (taskDef.containerDefinitions && taskDef.containerDefinitions.size() > 0) {
+            taskDef.containerDefinitions[0].image = imageUri
+        } else {
+            throw new Exception("No container definitions found in task definition")
+        }
+        
+        return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
+    } catch (Exception e) {
+        echo "⚠️ Error in updateTaskDefImageAndSerialize: ${e.message}"
+        throw e
     }
-    
-    // Use the provided image URI directly (already app-specific)
-    taskDef.containerDefinitions[0].image = imageUri
-    
-    return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
 }
+
 
 def testEnvironment(Map config) {
     echo "🔍 Testing ${env.IDLE_ENV} environment..."
