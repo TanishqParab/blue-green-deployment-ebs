@@ -154,14 +154,14 @@ def fetchResources(Map config) {
         ).trim()
 
 
-        // Try to get app-specific target groups first, fall back to default if not found
+        // Try to get app-specific target groups with the correct naming pattern
         result.BLUE_TG_ARN = sh(
-            script: "aws elbv2 describe-target-groups --names blue-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+            script: "aws elbv2 describe-target-groups --names blue-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
             returnStdout: true
         ).trim()
 
         result.GREEN_TG_ARN = sh(
-            script: "aws elbv2 describe-target-groups --names green-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+            script: "aws elbv2 describe-target-groups --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
             returnStdout: true
         ).trim()
 
@@ -234,15 +234,15 @@ def fetchResources(Map config) {
             result.IDLE_ENV = "GREEN"
             result.LIVE_TG_ARN = result.BLUE_TG_ARN
             result.IDLE_TG_ARN = result.GREEN_TG_ARN
-            result.LIVE_SERVICE = "blue-service-${appSuffix}"
-            result.IDLE_SERVICE = "green-service-${appSuffix}"
+            result.LIVE_SERVICE = "app${appSuffix}-blue-service"
+            result.IDLE_SERVICE = "app${appSuffix}-green-service"
         } else if (liveTgArn == result.GREEN_TG_ARN) {
             result.LIVE_ENV = "GREEN"
             result.IDLE_ENV = "BLUE"
             result.LIVE_TG_ARN = result.GREEN_TG_ARN
             result.IDLE_TG_ARN = result.BLUE_TG_ARN
-            result.LIVE_SERVICE = "green-service-${appSuffix}"
-            result.IDLE_SERVICE = "blue-service-${appSuffix}"
+            result.LIVE_SERVICE = "app${appSuffix}-green-service"
+            result.IDLE_SERVICE = "app${appSuffix}-blue-service"
         } else {
             error "❌ Live Target Group ARN (${liveTgArn}) does not match Blue or Green Target Groups."
         }
@@ -294,6 +294,7 @@ def parseJsonString(String json) {
         return parsed
     }
 }
+
 
 
 def ensureTargetGroupAssociation(Map config) {
@@ -412,9 +413,9 @@ def updateApplication(Map config) {
         def serviceNames = serviceArns.collect { it.tokenize('/').last() }
         echo "Discovered ECS services: ${serviceNames}"
 
-        // Look for app-specific services first
-        def blueService = serviceNames.find { it.toLowerCase() == "blue-service-${appSuffix}" }
-        def greenService = serviceNames.find { it.toLowerCase() == "green-service-${appSuffix}" }
+        // Look for app-specific services first with the correct naming pattern
+        def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
+        def greenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
         
         // Fall back to default services if app-specific ones don't exist
         if (!blueService) {
@@ -842,11 +843,11 @@ def scaleDownOldEnvironment(Map config) {
 
     // --- Fetch Blue and Green Target Group ARNs dynamically ---
     def blueTgArn = sh(
-        script: "aws elbv2 describe-target-groups --names blue-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+        script: "aws elbv2 describe-target-groups --names blue-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
         returnStdout: true
     ).trim()
     def greenTgArn = sh(
-        script: "aws elbv2 describe-target-groups --names green-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+        script: "aws elbv2 describe-target-groups --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
         returnStdout: true
     ).trim()
     if (!blueTgArn || blueTgArn == 'None') error "Blue target group ARN not found"
@@ -922,7 +923,7 @@ def scaleDownOldEnvironment(Map config) {
         def idleEnvLower = config.IDLE_ENV.toLowerCase()
         
         // Try app-specific service name first
-        def expectedIdleServiceName = "${idleEnvLower}-service-${appSuffix}"
+        def expectedIdleServiceName = "app${appSuffix}-${idleEnvLower}-service"
         def servicesJson = sh(
             script: "aws ecs list-services --cluster ${config.ECS_CLUSTER} --query 'serviceArns' --output json",
             returnStdout: true
