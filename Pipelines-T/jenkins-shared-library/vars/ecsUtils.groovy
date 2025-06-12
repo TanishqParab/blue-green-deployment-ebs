@@ -271,14 +271,23 @@ def fetchResources(Map config) {
         
         // Check if app-specific services exist, fall back to default if not
         try {
-            def liveServiceExists = sh(
+            // Check if app-specific blue service exists
+            def blueServiceExists = sh(
                 script: """
-                    aws ecs describe-services --cluster ${result.ECS_CLUSTER} --services ${result.LIVE_SERVICE} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "serviceArns[?contains(@,'app${appSuffix}-blue-service')]" --output text
                 """,
                 returnStdout: true
             ).trim()
             
-            if (liveServiceExists == "MISSING" || liveServiceExists == "INACTIVE") {
+            // Check if app-specific green service exists
+            def greenServiceExists = sh(
+                script: """
+                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "serviceArns[?contains(@,'app${appSuffix}-green-service')]" --output text
+                """,
+                returnStdout: true
+            ).trim()
+            
+            if (!blueServiceExists || !greenServiceExists) {
                 result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
                 result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
                 echo "⚠️ App-specific services not found, falling back to default service names"
@@ -306,6 +315,7 @@ def fetchResources(Map config) {
         error "❌ Failed to fetch ECS resources: ${e.message}"
     }
 }
+
 
 @NonCPS
 def parseJsonString(String json) {
@@ -377,17 +387,15 @@ def ensureTargetGroupAssociation(Map config) {
             echo "⚠️ Error parsing rule priorities: ${e.message}. Using default priority."
         }
 
-        // Use different starting priorities based on app suffix
-        int startPriority = appSuffix == "1" ? 100 : 200
+        // Use higher starting priorities to avoid conflicts
+        int startPriority = appSuffix == "1" ? 150 : 250
         int nextPriority = startPriority
         
-        for (p in priorities) {
-            if (p == nextPriority) {
-                nextPriority++
-            } else if (p > nextPriority) {
-                break
-            }
+        // Find the next available priority
+        while (priorities.contains(nextPriority)) {
+            nextPriority++
         }
+        
         echo "Using rule priority: ${nextPriority}"
         
         // Use app-specific path pattern
@@ -407,6 +415,7 @@ def ensureTargetGroupAssociation(Map config) {
         echo "✅ Target group is already associated with load balancer"
     }
 }
+
 
 @NonCPS
 def parseJsonWithErrorHandling(String text) {
@@ -429,6 +438,85 @@ def parseJsonWithErrorHandling(String text) {
     } catch (Exception e) {
         echo "⚠️ Error parsing JSON: ${e.message}"
         return []
+    }
+}
+
+
+
+
+def ensureTargetGroupAssociation(Map config) {
+    echo "Ensuring target group is associated with load balancer..."
+
+    if (!config.IDLE_TG_ARN || config.IDLE_TG_ARN.trim() == "") {
+        error "IDLE_TG_ARN is missing or empty"
+    }
+    if (!config.LISTENER_ARN || config.LISTENER_ARN.trim() == "") {
+        error "LISTENER_ARN is missing or empty"
+    }
+    
+    // Get app name from config
+    def appName = config.APP_NAME ?: "app_1"
+    def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
+
+    def targetGroupInfo = sh(
+        script: """
+        aws elbv2 describe-target-groups --target-group-arns ${config.IDLE_TG_ARN} --query 'TargetGroups[0].LoadBalancerArns' --output json
+        """,
+        returnStdout: true
+    ).trim()
+
+    // Use a @NonCPS helper for JSON parsing with error handling
+    def targetGroupJson = parseJsonWithErrorHandling(targetGroupInfo)
+
+    if (targetGroupJson.isEmpty()) {
+        echo "⚠️ Target group ${config.IDLE_ENV} is not associated with a load balancer. Creating a path-based rule..."
+
+        def rulesJson = sh(
+            script: """
+            aws elbv2 describe-rules --listener-arn ${config.LISTENER_ARN} --query 'Rules[*].Priority' --output json
+            """,
+            returnStdout: true
+        ).trim()
+
+        def priorities = []
+        try {
+            def parsedPriorities = parseJsonWithErrorHandling(rulesJson)
+            if (parsedPriorities) {
+                priorities = parsedPriorities
+                    .findAll { it != 'default' }
+                    .collect { it.toString().isInteger() ? it.toString().toInteger() : 0 }
+                    .sort()
+            }
+        } catch (Exception e) {
+            echo "⚠️ Error parsing rule priorities: ${e.message}. Using default priority."
+        }
+
+        // Use higher starting priorities to avoid conflicts
+        int startPriority = appSuffix == "1" ? 150 : 250
+        int nextPriority = startPriority
+        
+        // Find the next available priority
+        while (priorities.contains(nextPriority)) {
+            nextPriority++
+        }
+        
+        echo "Using rule priority: ${nextPriority}"
+        
+        // Use app-specific path pattern
+        def pathPattern = appSuffix == "1" ? "/*" : "/app${appSuffix}/*"
+
+        sh """
+        aws elbv2 create-rule \\
+            --listener-arn ${config.LISTENER_ARN} \\
+            --priority ${nextPriority} \\
+            --conditions '[{"Field":"path-pattern","Values":["${pathPattern}"]}]' \\
+            --actions '[{"Type":"forward","TargetGroupArn":"${config.IDLE_TG_ARN}"}]'
+        """
+
+        sleep(10)
+        echo "✅ Target group associated with load balancer via path rule (priority ${nextPriority})"
+    } else {
+        echo "✅ Target group is already associated with load balancer"
     }
 }
 
