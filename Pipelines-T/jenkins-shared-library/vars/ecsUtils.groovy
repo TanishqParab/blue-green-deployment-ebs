@@ -153,7 +153,6 @@ def fetchResources(Map config) {
             returnStdout: true
         ).trim()
 
-
         // Try to get app-specific target groups with the correct naming pattern
         result.BLUE_TG_ARN = sh(
             script: "aws elbv2 describe-target-groups --names blue-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
@@ -186,7 +185,9 @@ def fetchResources(Map config) {
             returnStdout: true
         ).trim()
         
-        def rules = parseJsonString(rulesJson).Rules
+        // Parse JSON safely using the NonCPS method
+        def parsedRules = parseJsonString(rulesJson)
+        def rules = parsedRules.Rules ?: []
         def ruleArn = null
         
         // Find the rule that matches our path pattern
@@ -201,6 +202,7 @@ def fetchResources(Map config) {
                             }
                         }
                     }
+                    if (ruleArn) break
                 }
             }
             if (ruleArn) break
@@ -208,8 +210,6 @@ def fetchResources(Map config) {
         
         echo "Looking for path pattern: ${appPathPattern}"
         echo "Found rule ARN: ${ruleArn ?: 'None'}"
-        
-
         
         def liveTgArn = null
         
@@ -244,6 +244,7 @@ def fetchResources(Map config) {
             echo "Using blue target group as default: ${liveTgArn}"
         }
 
+        // Add this after the liveTgArn determination
         if (liveTgArn == result.BLUE_TG_ARN) {
             result.LIVE_ENV = "BLUE"
             result.IDLE_ENV = "GREEN"
@@ -259,21 +260,33 @@ def fetchResources(Map config) {
             result.LIVE_SERVICE = "app${appSuffix}-green-service"
             result.IDLE_SERVICE = "app${appSuffix}-blue-service"
         } else {
-            error "❌ Live Target Group ARN (${liveTgArn}) does not match Blue or Green Target Groups."
+            echo "⚠️ Live Target Group ARN (${liveTgArn}) does not match Blue or Green Target Groups. Defaulting to BLUE."
+            result.LIVE_ENV = "BLUE"
+            result.IDLE_ENV = "GREEN"
+            result.LIVE_TG_ARN = result.BLUE_TG_ARN
+            result.IDLE_TG_ARN = result.GREEN_TG_ARN
+            result.LIVE_SERVICE = "app${appSuffix}-blue-service"
+            result.IDLE_SERVICE = "app${appSuffix}-green-service"
         }
         
         // Check if app-specific services exist, fall back to default if not
-        def liveServiceExists = sh(
-            script: """
-                aws ecs describe-services --cluster ${result.ECS_CLUSTER} --services ${result.LIVE_SERVICE} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
-            """,
-            returnStdout: true
-        ).trim()
-        
-        if (liveServiceExists == "MISSING" || liveServiceExists == "INACTIVE") {
+        try {
+            def liveServiceExists = sh(
+                script: """
+                    aws ecs describe-services --cluster ${result.ECS_CLUSTER} --services ${result.LIVE_SERVICE} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+                """,
+                returnStdout: true
+            ).trim()
+            
+            if (liveServiceExists == "MISSING" || liveServiceExists == "INACTIVE") {
+                result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
+                result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
+                echo "⚠️ App-specific services not found, falling back to default service names"
+            }
+        } catch (Exception e) {
+            echo "⚠️ Error checking service existence: ${e.message}. Falling back to default service names."
             result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
             result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
-            echo "⚠️ App-specific services not found, falling back to default service names"
         }
 
         echo "✅ ECS Cluster: ${result.ECS_CLUSTER}"
@@ -296,17 +309,22 @@ def fetchResources(Map config) {
 
 @NonCPS
 def parseJsonString(String json) {
-    def parsed = new JsonSlurper().parseText(json)
-    
-    // Handle different types of JSON responses
-    if (parsed instanceof List) {
-        return parsed
-    } else if (parsed instanceof Map) {
-        def safeMap = [:]
-        safeMap.putAll(parsed)
-        return safeMap
-    } else {
-        return parsed
+    try {
+        def parsed = new JsonSlurper().parseText(json)
+        
+        // Handle different types of JSON responses
+        if (parsed instanceof List) {
+            return parsed
+        } else if (parsed instanceof Map) {
+            def safeMap = [:]
+            safeMap.putAll(parsed)
+            return safeMap
+        } else {
+            return parsed
+        }
+    } catch (Exception e) {
+        echo "⚠️ Error parsing JSON: ${e.message}"
+        return [:]
     }
 }
 
