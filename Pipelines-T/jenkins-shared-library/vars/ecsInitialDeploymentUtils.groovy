@@ -128,36 +128,48 @@ def deployToBlueService(Map config) {
             returnStdout: true
         ).trim()
         
-        // For app_1, use default action; for other apps, create path-based rules
-        if (appName == "app_1") {
-            sh """
-            # Configure default action to route to Blue target group
-            aws elbv2 modify-listener --listener-arn ${listenerArn} --default-actions Type=forward,TargetGroupArn=${blueTgArn}
-            """
-        } else {
-            // Find an available priority
-            def usedPriorities = sh(
-                script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query 'Rules[?Priority!=`default`].Priority' --output json",
+        // For all apps, use path-based rules and keep the welcome message as default action
+        {
+            // Check if a rule for this path pattern already exists
+            def pathPattern = "/app${appSuffix}*"
+            def existingRule = sh(
+                script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query \"Rules[?contains(to_string(Conditions[?Field=='path-pattern'].Values[]), '${pathPattern}')].RuleArn\" --output text",
                 returnStdout: true
             ).trim()
             
-            def usedPrioritiesJson = initialDeploymentParseJson(usedPriorities)
-            def priority = 50  // Start with a lower priority for app routing
-            
-            // Find the first available priority
-            while (usedPrioritiesJson.contains(priority.toString())) {
-                priority++
+            if (existingRule && existingRule != "None") {
+                // Rule exists, modify it to point to the blue target group
+                sh """
+                aws elbv2 modify-rule \\
+                    --rule-arn ${existingRule} \\
+                    --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
+                """
+                echo "Modified existing rule for path pattern ${pathPattern} to point to ${blueTgArn}"
+            } else {
+                // Rule doesn't exist, create a new one
+                def usedPriorities = sh(
+                    script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query 'Rules[?Priority!=`default`].Priority' --output json",
+                    returnStdout: true
+                ).trim()
+                
+                def usedPrioritiesJson = initialDeploymentParseJson(usedPriorities)
+                def priority = 50  // Start with a lower priority for app routing
+                
+                // Find the first available priority
+                while (usedPrioritiesJson.contains(priority.toString())) {
+                    priority++
+                }
+                
+                // Create path-based rule for this app
+                sh """
+                aws elbv2 create-rule \\
+                    --listener-arn ${listenerArn} \\
+                    --priority ${priority} \\
+                    --conditions '[{"Field":"path-pattern","Values":["${pathPattern}"]}]' \\
+                    --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
+                """
+                echo "Created path-based rule with priority ${priority} for app${appSuffix}"
             }
-            
-            // Create path-based rule for this app
-            sh """
-            aws elbv2 create-rule \\
-                --listener-arn ${listenerArn} \\
-                --priority ${priority} \\
-                --conditions '[{"Field":"path-pattern","Values":["/app${appSuffix}/*"]}]' \\
-                --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
-            """
-            echo "Created path-based rule with priority ${priority} for app${appSuffix}"
         }
         
         // Wait for service to stabilize
