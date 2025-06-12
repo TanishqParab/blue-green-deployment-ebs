@@ -939,11 +939,11 @@ def switchTrafficToTargetEnv(String targetEnv, String blueTgArn, String greenTgA
     // For app-specific routing, use the exact path pattern from Terraform
     def appPathPattern = "/app${appSuffix}*"
     
+    // Use a safer approach to find the rule
     def ruleArn = sh(
         script: """
-            aws elbv2 describe-rules --listener-arn ${listenerArn} \\
-            --query "Rules[?contains(Conditions[0].PathPatternConfig.Values,'${appPathPattern}')].RuleArn" \\
-            --output text
+            aws elbv2 describe-rules --listener-arn ${listenerArn} --output json | \\
+            jq -r '.Rules[] | select(.Conditions != null) | select((.Conditions[].PathPatternConfig.Values | arrays) and (.Conditions[].PathPatternConfig.Values[] | contains("${appPathPattern}"))) | .RuleArn' | head -1
         """,
         returnStdout: true
     ).trim()
