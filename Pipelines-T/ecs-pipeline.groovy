@@ -230,11 +230,50 @@ pipeline {
                         repoBranch: env.REPO_BRANCH
                     ]
                     
+                    // Get changed files to determine which apps need deployment
+                    def changedFiles = []
+                    try {
+                        def gitDiff = sh(
+                            script: "git diff --name-only HEAD~1 HEAD",
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (gitDiff) {
+                            changedFiles = gitDiff.split('\n')
+                            echo "📝 Changed files: ${changedFiles.join(', ')}"
+                        }
+                    } catch (Exception e) {
+                        echo "⚠️ Could not determine changed files: ${e.message}"
+                    }
+                    
+                    // Function to check if app-specific files were changed
+                    def hasAppSpecificChanges = { appName ->
+                        if (changedFiles.isEmpty()) return true // If we can't determine changes, deploy all
+                        
+                        def appSuffix = appName.replace("app_", "")
+                        for (def file : changedFiles) {
+                            if (file.contains("app_${appSuffix}.py") || 
+                                file.contains("app${appSuffix}.py") || 
+                                file.contains("app${appSuffix}/") ||
+                                (appSuffix == "1" && file.contains("app.py"))) {
+                                return true
+                            }
+                        }
+                        return false
+                    }
+                    
                     // Handle multi-app deployment
                     if (params.APP_NAME == 'all' || params.APP_NAME == null) {
                         // Deploy all apps
                         ['app_1', 'app_2', 'app_3'].each { appName ->
                             echo "Switching application: ${appName}"
+                            
+                            // Skip apps that don't have changes
+                            if (!hasAppSpecificChanges(appName)) {
+                                echo "📄 No changes detected for ${appName}. Skipping deployment."
+                                return // Skip this iteration
+                            }
+                            
                             def appConfig = config.clone()
                             appConfig.appName = appName
                             
@@ -243,6 +282,18 @@ pipeline {
                             switchPipelineImpl.checkout(appConfig)
                             switchPipelineImpl.detectChanges(appConfig)
                             
+                            // Only proceed with deployment if changes detected
+                            if (env.DEPLOY_NEW_VERSION == 'true') {
+                                echo "🚀 Deploying changes for ${appName}"
+                                switchPipelineImpl.fetchResources(appConfig)
+                                switchPipelineImpl.ensureTargetGroupAssociation(appConfig)
+                                switchPipelineImpl.updateApplication(appConfig)
+                                switchPipelineImpl.testEnvironment(appConfig)
+                                switchPipelineImpl.manualApprovalBeforeSwitchTrafficECS(appConfig)
+                                switchPipelineImpl.switchTraffic(appConfig)
+                                switchPipelineImpl.postSwitchActions(appConfig)
+                            }
+                            // Only proceed with deployment if changes detected for this app
                             if (env.DEPLOY_NEW_VERSION == 'true') {
                                 switchPipelineImpl.fetchResources(appConfig)
                                 switchPipelineImpl.ensureTargetGroupAssociation(appConfig)
@@ -257,6 +308,7 @@ pipeline {
                         // Deploy single app
                         config.appName = params.APP_NAME
                         
+                        // For single app deployment, always proceed (user explicitly selected this app)
                         // Call the switch pipeline implementation
                         switchPipelineImpl.initialize(config)
                         switchPipelineImpl.checkout(config)
