@@ -122,6 +122,18 @@ def detectChanges(Map config) {
             echo "📝 Changed files: ${changedFiles.join(', ')}"
             echo "🚀 Change(s) detected. Triggering deployment."
             env.DEPLOY_NEW_VERSION = 'true'
+            
+            // Detect which app was changed
+            def appPattern = ~/.*app_([1-3])\.py$/
+            def appFile = changedFiles.find { it =~ appPattern }
+            if (appFile) {
+                def matcher = appFile =~ appPattern
+                if (matcher.matches()) {
+                    def appNum = matcher[0][1]
+                    env.CHANGED_APP = "app_${appNum}"
+                    echo "📱 Detected change in application: ${env.CHANGED_APP}"
+                }
+            }
         } else {
             echo "📄 No changes detected between last two commits."
             env.DEPLOY_NEW_VERSION = 'false'
@@ -141,8 +153,8 @@ def fetchResources(Map config) {
     def result = [:]
 
     try {
-        // Get app name from config or default to app_1
-        def appName = config.appName ?: "app_1"
+        // Use the app detected in detectChanges or from config
+        def appName = env.CHANGED_APP ?: config.appName ?: "app_1"
         def appSuffix = appName.replace("app_", "")
         
         result.APP_NAME = appName
@@ -451,11 +463,11 @@ def updateApplication(Map config) {
     try {
         // Debug statements to check input parameters
         echo "DEBUG: Received config: ${config}"
-        echo "DEBUG: APP_NAME from config: ${config.APP_NAME}"
+        echo "DEBUG: appName from config: ${config.appName}"
         
-        // Get app name from config
-        def appName = config.APP_NAME ?: "app_1"
-        def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
+        // Get app name from config or default to app_1
+        def appName = config.appName ?: "app_1"
+        def appSuffix = appName.replace("app_", "")
         
         echo "DEBUG: Using appName: ${appName}"
         echo "DEBUG: Using appSuffix: ${appSuffix}"
@@ -800,7 +812,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         throw e
     }
 }
-
 
 def testEnvironment(Map config) {
     echo "🔍 Testing ${env.IDLE_ENV} environment..."
