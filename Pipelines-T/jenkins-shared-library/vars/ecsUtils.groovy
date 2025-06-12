@@ -586,7 +586,7 @@ def updateApplication(Map config) {
 
         sh """
             aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
-            cd ${env.WORKSPACE}/modules/ecs/scripts
+            cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
             docker build -t ${env.ECR_REPO_NAME}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
             docker tag ${env.ECR_REPO_NAME}:${appName}-latest ${ecrUri}:${appName}-latest
             docker push ${ecrUri}:${appName}-latest
