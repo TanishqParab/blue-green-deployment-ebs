@@ -1077,11 +1077,11 @@ def scaleDownOldEnvironment(Map config) {
         // For app-specific routing, use the exact path pattern from Terraform
         def appPathPattern = "/app${appSuffix}*"
         
+        // Use a safer approach to find the rule
         def ruleArn = sh(
             script: """
-                aws elbv2 describe-rules --listener-arn ${config.LISTENER_ARN} \\
-                --query "Rules[?contains(Conditions[0].PathPatternConfig.Values,'${appPathPattern}')].RuleArn" \\
-                --output text
+                aws elbv2 describe-rules --listener-arn ${config.LISTENER_ARN} --output json | \\
+                jq -r '.Rules[] | select(.Conditions != null) | select((.Conditions[].PathPatternConfig.Values | arrays) and (.Conditions[].PathPatternConfig.Values[] | contains("${appPathPattern}"))) | .RuleArn' | head -1
             """,
             returnStdout: true
         ).trim()
@@ -1092,16 +1092,18 @@ def scaleDownOldEnvironment(Map config) {
             // Get target group from app-specific rule
             activeTgArn = sh(
                 script: """
-                    aws elbv2 describe-rules --rule-arns ${ruleArn} \\
-                    --query 'Rules[0].Actions[0].ForwardConfig.TargetGroups[0].TargetGroupArn || Rules[0].Actions[0].TargetGroupArn' \\
-                    --output text
+                    aws elbv2 describe-rules --rule-arns ${ruleArn} --output json | \\
+                    jq -r '.Rules[0].Actions[0].TargetGroupArn // .Rules[0].Actions[0].ForwardConfig.TargetGroups[0].TargetGroupArn'
                 """,
                 returnStdout: true
             ).trim()
         } else if (appSuffix == "1") {
             // For app1, check default action
             activeTgArn = sh(
-                script: 'aws elbv2 describe-listeners --listener-arns ' + config.LISTENER_ARN + ' --query \'Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups[?Weight==`1`].TargetGroupArn | [0]\' --output text',
+                script: """
+                    aws elbv2 describe-listeners --listener-arns ${config.LISTENER_ARN} --output json | \\
+                    jq -r '.Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups[] | select(.Weight == 1) | .TargetGroupArn'
+                """,
                 returnStdout: true
             ).trim()
         }
@@ -1212,3 +1214,4 @@ def scaleDownOldEnvironment(Map config) {
         throw e
     }
 }
+
