@@ -377,8 +377,10 @@ def ensureTargetGroupAssociation(Map config) {
             echo "⚠️ Error parsing rule priorities: ${e.message}. Using default priority."
         }
 
-        int startPriority = 100
+        // Use different starting priorities based on app suffix
+        int startPriority = appSuffix == "1" ? 100 : 200
         int nextPriority = startPriority
+        
         for (p in priorities) {
             if (p == nextPriority) {
                 nextPriority++
@@ -389,7 +391,7 @@ def ensureTargetGroupAssociation(Map config) {
         echo "Using rule priority: ${nextPriority}"
         
         // Use app-specific path pattern
-        def pathPattern = appSuffix == "1" ? "/associate-tg*" : "/app${appSuffix}/associate-tg*"
+        def pathPattern = appSuffix == "1" ? "/*" : "/app${appSuffix}/*"
 
         sh """
         aws elbv2 create-rule \\
@@ -429,6 +431,7 @@ def parseJsonWithErrorHandling(String text) {
         return []
     }
 }
+
 
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
