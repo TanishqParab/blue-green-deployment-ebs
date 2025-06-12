@@ -18,7 +18,6 @@ def deployToBlueService(Map config) {
         ).trim()
         
         // Build and push Docker image for the specified app with app_*-latest tag
-        // Using the exact same commands as your null resource
         sh """
             # Authenticate Docker to ECR
             aws ecr get-login-password --region ${config.awsRegion} | docker login --username AWS --password-stdin ${ecrUri}
@@ -45,7 +44,8 @@ def deployToBlueService(Map config) {
             returnStdout: true
         ).trim()
         
-        def serviceArns = initialDeploymentParseJson(servicesJson).serviceArns
+        def parsed = new JsonSlurper().parseText(servicesJson)
+        def serviceArns = parsed.serviceArns
         
         // Look for app-specific blue service with exact naming pattern: app1-blue-service
         def blueServiceName = "app${appSuffix}-blue-service"
@@ -79,7 +79,18 @@ def deployToBlueService(Map config) {
         ).trim()
         
         // Update task definition with new image
-        def newTaskDefJson = initialDeploymentUpdateTaskDef(taskDefJsonText, "${ecrUri}:${appName}-latest")
+        def taskDef = new JsonSlurper().parseText(taskDefJsonText)
+        taskDef.remove('taskDefinitionArn')
+        taskDef.remove('revision')
+        taskDef.remove('status')
+        taskDef.remove('requiresAttributes')
+        taskDef.remove('compatibilities')
+        taskDef.remove('registeredAt')
+        taskDef.remove('registeredBy')
+        taskDef.remove('deregisteredAt')
+        taskDef.containerDefinitions[0].image = "${ecrUri}:${appName}-latest"
+        def newTaskDefJson = JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
+        
         writeFile file: "initial-task-def-${appSuffix}.json", text: newTaskDefJson
         
         def newTaskDefArn = sh(
@@ -129,47 +140,45 @@ def deployToBlueService(Map config) {
         ).trim()
         
         // For all apps, use path-based rules and keep the welcome message as default action
-        {
-            // Check if a rule for this path pattern already exists
-            def pathPattern = "/app${appSuffix}*"
-            def existingRule = sh(
-                script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query \"Rules[?contains(to_string(Conditions[?Field=='path-pattern'].Values[]), '${pathPattern}')].RuleArn\" --output text",
+        // Check if a rule for this path pattern already exists
+        def pathPattern = "/app${appSuffix}*"
+        def existingRule = sh(
+            script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query \"Rules[?contains(to_string(Conditions[?Field=='path-pattern'].Values[]), '${pathPattern}')].RuleArn\" --output text",
+            returnStdout: true
+        ).trim()
+        
+        if (existingRule && existingRule != "None") {
+            // Rule exists, modify it to point to the blue target group
+            sh """
+            aws elbv2 modify-rule \\
+                --rule-arn ${existingRule} \\
+                --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
+            """
+            echo "Modified existing rule for path pattern ${pathPattern} to point to ${blueTgArn}"
+        } else {
+            // Rule doesn't exist, create a new one
+            def usedPriorities = sh(
+                script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query 'Rules[?Priority!=`default`].Priority' --output json",
                 returnStdout: true
             ).trim()
             
-            if (existingRule && existingRule != "None") {
-                // Rule exists, modify it to point to the blue target group
-                sh """
-                aws elbv2 modify-rule \\
-                    --rule-arn ${existingRule} \\
-                    --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
-                """
-                echo "Modified existing rule for path pattern ${pathPattern} to point to ${blueTgArn}"
-            } else {
-                // Rule doesn't exist, create a new one
-                def usedPriorities = sh(
-                    script: "aws elbv2 describe-rules --listener-arn ${listenerArn} --query 'Rules[?Priority!=`default`].Priority' --output json",
-                    returnStdout: true
-                ).trim()
-                
-                def usedPrioritiesJson = initialDeploymentParseJson(usedPriorities)
-                def priority = 50  // Start with a lower priority for app routing
-                
-                // Find the first available priority
-                while (usedPrioritiesJson.contains(priority.toString())) {
-                    priority++
-                }
-                
-                // Create path-based rule for this app
-                sh """
-                aws elbv2 create-rule \\
-                    --listener-arn ${listenerArn} \\
-                    --priority ${priority} \\
-                    --conditions '[{"Field":"path-pattern","Values":["${pathPattern}"]}]' \\
-                    --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
-                """
-                echo "Created path-based rule with priority ${priority} for app${appSuffix}"
+            def prioritiesJson = new JsonSlurper().parseText(usedPriorities)
+            def priority = 50  // Start with a lower priority for app routing
+            
+            // Find the first available priority
+            while (prioritiesJson.contains(priority.toString())) {
+                priority++
             }
+            
+            // Create path-based rule for this app
+            sh """
+            aws elbv2 create-rule \\
+                --listener-arn ${listenerArn} \\
+                --priority ${priority} \\
+                --conditions '[{"Field":"path-pattern","Values":["${pathPattern}"]}]' \\
+                --actions '[{"Type":"forward","TargetGroupArn":"${blueTgArn}"}]'
+            """
+            echo "Created path-based rule with priority ${priority} for app${appSuffix}"
         }
         
         // Wait for service to stabilize
@@ -194,25 +203,4 @@ def deployToBlueService(Map config) {
         echo "❌ Initial deployment failed: ${e.message}"
         throw e
     }
-}
-
-@NonCPS
-def initialDeploymentParseJson(String jsonText) {
-    def parsed = new JsonSlurper().parseText(jsonText)
-    return parsed
-}
-
-@NonCPS
-def initialDeploymentUpdateTaskDef(String jsonText, String imageUri) {
-    def taskDef = new JsonSlurper().parseText(jsonText)
-    taskDef.remove('taskDefinitionArn')
-    taskDef.remove('revision')
-    taskDef.remove('status')
-    taskDef.remove('requiresAttributes')
-    taskDef.remove('compatibilities')
-    taskDef.remove('registeredAt')
-    taskDef.remove('registeredBy')
-    taskDef.remove('deregisteredAt')
-    taskDef.containerDefinitions[0].image = imageUri
-    return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
 }
