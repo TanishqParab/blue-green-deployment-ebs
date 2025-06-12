@@ -465,8 +465,8 @@ def updateApplication(Map config) {
         echo "DEBUG: Received config: ${config}"
         echo "DEBUG: appName from config: ${config.appName}"
         
-        // Get app name from config or default to app_1
-        def appName = config.appName ?: "app_1"
+        // Use the app detected in detectChanges or from config
+        def appName = env.CHANGED_APP ?: config.APP_NAME ?: config.appName ?: "app_1"
         def appSuffix = appName.replace("app_", "")
         
         echo "DEBUG: Using appName: ${appName}"
