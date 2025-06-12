@@ -215,34 +215,4 @@ def initialDeploymentUpdateTaskDef(String jsonText, String imageUri) {
     taskDef.remove('deregisteredAt')
     taskDef.containerDefinitions[0].image = imageUri
     return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
-}(String jsonText) {
-    def parsed = new JsonSlurper().parseText(jsonText)
-    
-    // Handle different types of JSON responses
-    if (parsed instanceof List) {
-        return parsed
-    } else if (parsed instanceof Map) {
-        def safeMap = [:]
-        safeMap.putAll(parsed)
-        return safeMap
-    } else {
-        return parsed
-    }
-}
-
-@NonCPS
-def initialDeploymentGetField(String jsonText, String fieldName) {
-    def parsed = new JsonSlurper().parseText(jsonText)
-    return parsed?."$fieldName"?.toString()
-}
-
-@NonCPS
-def initialDeploymentUpdateTaskDef(String jsonText, String imageUri) {
-    def taskDef = new JsonSlurper().parseText(jsonText)
-    ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
-     'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
-        taskDef.remove(field)
-    }
-    taskDef.containerDefinitions[0].image = imageUri
-    return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
 }
