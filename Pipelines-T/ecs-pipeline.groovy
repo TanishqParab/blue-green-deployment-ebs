@@ -293,16 +293,6 @@ pipeline {
                                 switchPipelineImpl.switchTraffic(appConfig)
                                 switchPipelineImpl.postSwitchActions(appConfig)
                             }
-                            // Only proceed with deployment if changes detected for this app
-                            if (env.DEPLOY_NEW_VERSION == 'true') {
-                                switchPipelineImpl.fetchResources(appConfig)
-                                switchPipelineImpl.ensureTargetGroupAssociation(appConfig)
-                                switchPipelineImpl.updateApplication(appConfig)
-                                switchPipelineImpl.testEnvironment(appConfig)
-                                switchPipelineImpl.manualApprovalBeforeSwitchTrafficECS(appConfig)
-                                switchPipelineImpl.switchTraffic(appConfig)
-                                switchPipelineImpl.postSwitchActions(appConfig)
-                            }
                         }
                     } else {
                         // Deploy single app
@@ -327,6 +317,7 @@ pipeline {
                 }
             }
         }
+        
         
         stage('Execute Rollback') {
             when {
