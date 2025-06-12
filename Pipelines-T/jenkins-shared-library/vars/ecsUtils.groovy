@@ -209,7 +209,7 @@ def fetchResources(Map config) {
         echo "Looking for path pattern: ${appPathPattern}"
         echo "Found rule ARN: ${ruleArn ?: 'None'}"
         
-        echo "Found rule ARN for ${appPathPattern}: ${ruleArn ?: 'None'}"
+
         
         def liveTgArn = null
         
@@ -242,28 +242,6 @@ def fetchResources(Map config) {
             // For now, just use the blue target group as default
             liveTgArn = result.BLUE_TG_ARN
             echo "Using blue target group as default: ${liveTgArn}"
-                --output json
-                """,
-                returnStdout: true
-            ).trim()
-
-            def targetGroups = parseJsonString(targetGroupsJson)
-
-            // Find the target group with the highest weight (>0)
-            def maxWeight = 0
-            if (targetGroups) {
-                targetGroups.each { tg ->
-                    if (tg.Weight > maxWeight) {
-                        maxWeight = tg.Weight
-                        liveTgArn = tg.TargetGroupArn
-                    }
-                }
-            }
-            
-            // Fallback: If all weights are zero, pick the first TG
-            if (liveTgArn == null && targetGroups?.size() > 0) {
-                liveTgArn = targetGroups[0].TargetGroupArn
-            }
         }
 
         if (liveTgArn == result.BLUE_TG_ARN) {
