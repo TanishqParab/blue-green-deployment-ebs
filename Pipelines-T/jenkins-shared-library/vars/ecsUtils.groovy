@@ -599,21 +599,36 @@ def updateApplication(Map config) {
         // Step 6: Update ECS Service
         echo "Updating ${env.IDLE_ENV} service (${env.IDLE_SERVICE})..."
 
-        def taskDefArn = sh(
-            script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text",
-            returnStdout: true
-        )?.trim()
-
-        if (!taskDefArn) {
-            error "❌ Failed to get task definition ARN for service ${env.IDLE_SERVICE}"
+        // Try to get task definition ARN with fallback to active service
+        def taskDefArn
+        try {
+            taskDefArn = sh(
+                script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
+                returnStdout: true
+            )?.trim()
+            
+            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
+                throw new Exception("No task definition found")
+            }
+        } catch (Exception e) {
+            echo "⚠️ No valid task definition found for ${env.IDLE_SERVICE}, using active service task definition"
+            def activeService = (env.ACTIVE_ENV == "BLUE") ? blueService : greenService
+            taskDefArn = sh(
+                script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${activeService} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
+                returnStdout: true
+            )?.trim()
+            
+            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
+                error "❌ Could not find a task definition for either service"
+            }
         }
 
         def taskDefJsonText = sh(
-            script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json",
+            script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo ''",
             returnStdout: true
         )?.trim()
 
-        if (!taskDefJsonText) {
+        if (!taskDefJsonText || taskDefJsonText == "null") {
             error "❌ Failed to get task definition JSON for ARN ${taskDefArn}"
         }
 
@@ -622,11 +637,11 @@ def updateApplication(Map config) {
         writeFile file: "new-task-def-${appSuffix}.json", text: newTaskDefJson
 
         def newTaskDefArn = sh(
-            script: "aws ecs register-task-definition --cli-input-json file://new-task-def-${appSuffix}.json --region ${env.AWS_REGION} --query 'taskDefinition.taskDefinitionArn' --output text",
+            script: "aws ecs register-task-definition --cli-input-json file://new-task-def-${appSuffix}.json --region ${env.AWS_REGION} --query 'taskDefinition.taskDefinitionArn' --output text || echo ''",
             returnStdout: true
         )?.trim()
 
-        if (!newTaskDefArn) {
+        if (!newTaskDefArn || newTaskDefArn == "null") {
             error "❌ Failed to register new task definition"
         }
 
@@ -645,6 +660,7 @@ def updateApplication(Map config) {
         echo "Waiting for ${env.IDLE_ENV} service to stabilize..."
         sh "aws ecs wait services-stable --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION}"
         echo "✅ Service ${env.IDLE_ENV} is stable"
+
 
     } catch (Exception e) {
         echo "❌ Error occurred during ECS update:\n${e}"
