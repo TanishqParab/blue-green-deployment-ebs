@@ -3,6 +3,28 @@
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 
+// Helper function to parse JSON
+@NonCPS
+def initialDeploymentParseJson(String jsonText) {
+    return new JsonSlurper().parseText(jsonText)
+}
+
+// Helper function to update task definition
+@NonCPS
+def initialDeploymentUpdateTaskDef(String jsonText, String imageUri) {
+    def taskDef = new JsonSlurper().parseText(jsonText)
+    taskDef.remove('taskDefinitionArn')
+    taskDef.remove('revision')
+    taskDef.remove('status')
+    taskDef.remove('requiresAttributes')
+    taskDef.remove('compatibilities')
+    taskDef.remove('registeredAt')
+    taskDef.remove('registeredBy')
+    taskDef.remove('deregisteredAt')
+    taskDef.containerDefinitions[0].image = imageUri
+    return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
+}
+
 def deployToBlueService(Map config) {
     // Get app name from config or default to app_1
     def appName = config.appName ?: "app_1"
@@ -44,8 +66,7 @@ def deployToBlueService(Map config) {
             returnStdout: true
         ).trim()
         
-        def parsed = new JsonSlurper().parseText(servicesJson)
-        def serviceArns = parsed.serviceArns
+        def serviceArns = initialDeploymentParseJson(servicesJson).serviceArns
         
         // Look for app-specific blue service with exact naming pattern: app1-blue-service
         def blueServiceName = "app${appSuffix}-blue-service"
@@ -79,18 +100,7 @@ def deployToBlueService(Map config) {
         ).trim()
         
         // Update task definition with new image
-        def taskDef = new JsonSlurper().parseText(taskDefJsonText)
-        taskDef.remove('taskDefinitionArn')
-        taskDef.remove('revision')
-        taskDef.remove('status')
-        taskDef.remove('requiresAttributes')
-        taskDef.remove('compatibilities')
-        taskDef.remove('registeredAt')
-        taskDef.remove('registeredBy')
-        taskDef.remove('deregisteredAt')
-        taskDef.containerDefinitions[0].image = "${ecrUri}:${appName}-latest"
-        def newTaskDefJson = JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
-        
+        def newTaskDefJson = initialDeploymentUpdateTaskDef(taskDefJsonText, "${ecrUri}:${appName}-latest")
         writeFile file: "initial-task-def-${appSuffix}.json", text: newTaskDefJson
         
         def newTaskDefArn = sh(
@@ -162,7 +172,7 @@ def deployToBlueService(Map config) {
                 returnStdout: true
             ).trim()
             
-            def prioritiesJson = new JsonSlurper().parseText(usedPriorities)
+            def prioritiesJson = initialDeploymentParseJson(usedPriorities)
             def priority = 50  // Start with a lower priority for app routing
             
             // Find the first available priority
