@@ -175,36 +175,73 @@ def fetchResources(Map config) {
             returnStdout: true
         ).trim()
 
-        // Check for app-specific routing rule first
-        def appPathPattern = appSuffix == "1" ? "/" : "/app${appSuffix}/*"
+        // Check for app-specific routing rule using the exact path pattern from Terraform
+        def appPathPattern = "/app${appSuffix}*"  // Matches Terraform config: "/app1*", "/app2*", "/app3*"
         
-        def ruleArn = sh(
+        // Get all rules for the listener
+        def rulesJson = sh(
             script: """
-                aws elbv2 describe-rules --listener-arn ${result.LISTENER_ARN} \\
-                --query "Rules[?contains(Conditions[0].PathPatternConfig.Values,'${appPathPattern}')].RuleArn" \\
-                --output text
+                aws elbv2 describe-rules --listener-arn ${result.LISTENER_ARN} --output json
             """,
             returnStdout: true
         ).trim()
         
+        def rules = parseJsonString(rulesJson).Rules
+        def ruleArn = null
+        
+        // Find the rule that matches our path pattern
+        for (def rule : rules) {
+            if (rule.Priority != 'default' && rule.Conditions) {
+                for (def condition : rule.Conditions) {
+                    if (condition.Field == 'path-pattern' && condition.PathPatternConfig && condition.PathPatternConfig.Values) {
+                        for (def pattern : condition.PathPatternConfig.Values) {
+                            if (pattern == appPathPattern) {
+                                ruleArn = rule.RuleArn
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            if (ruleArn) break
+        }
+        
+        echo "Looking for path pattern: ${appPathPattern}"
+        echo "Found rule ARN: ${ruleArn ?: 'None'}"
+        
+        echo "Found rule ARN for ${appPathPattern}: ${ruleArn ?: 'None'}"
+        
         def liveTgArn = null
         
-        if (ruleArn && ruleArn != "None") {
+        if (ruleArn) {
             // Get target group from app-specific rule
-            liveTgArn = sh(
-                script: """
-                    aws elbv2 describe-rules --rule-arns ${ruleArn} \\
-                    --query 'Rules[0].Actions[0].ForwardConfig.TargetGroups[0].TargetGroupArn || Rules[0].Actions[0].TargetGroupArn' \\
-                    --output text
-                """,
-                returnStdout: true
-            ).trim()
+            for (def rule : rules) {
+                if (rule.RuleArn == ruleArn && rule.Actions && rule.Actions.size() > 0) {
+                    def action = rule.Actions[0]
+                    if (action.Type == 'forward') {
+                        if (action.TargetGroupArn) {
+                            liveTgArn = action.TargetGroupArn
+                        } else if (action.ForwardConfig && action.ForwardConfig.TargetGroups) {
+                            // Find target group with highest weight
+                            def maxWeight = 0
+                            for (def tg : action.ForwardConfig.TargetGroups) {
+                                if (tg.Weight > maxWeight) {
+                                    maxWeight = tg.Weight
+                                    liveTgArn = tg.TargetGroupArn
+                                }
+                            }
+                        }
+                    }
+                    break
+                }
+            }
         } else {
-            // Fall back to default action if no app-specific rule exists
-            def targetGroupsJson = sh(
-                script: """
-                aws elbv2 describe-listeners --listener-arns ${result.LISTENER_ARN} \\
-                --query 'Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups' \\
+            // If no rule found for this app, we need to create one
+            echo "No rule found for ${appPathPattern}, will need to create one"
+            
+            // For now, just use the blue target group as default
+            liveTgArn = result.BLUE_TG_ARN
+            echo "Using blue target group as default: ${liveTgArn}"
                 --output json
                 """,
                 returnStdout: true
@@ -719,8 +756,8 @@ def switchTrafficToTargetEnv(String targetEnv, String blueTgArn, String greenTgA
     def targetArn = (targetEnv == "GREEN") ? greenTgArn : blueTgArn
     def otherArn  = (targetEnv == "GREEN") ? blueTgArn  : greenTgArn
     
-    // For app-specific routing, check if there's a path-based rule
-    def appPathPattern = appSuffix == "1" ? "/" : "/app${appSuffix}/*"
+    // For app-specific routing, use the exact path pattern from Terraform
+    def appPathPattern = "/app${appSuffix}*"
     
     def ruleArn = sh(
         script: """
@@ -857,8 +894,8 @@ def scaleDownOldEnvironment(Map config) {
     if (!config.ACTIVE_ENV) {
         echo "⚙️ ACTIVE_ENV not set, determining dynamically..."
         
-        // For app-specific routing, check if there's a path-based rule
-        def appPathPattern = appSuffix == "1" ? "/" : "/app${appSuffix}/*"
+        // For app-specific routing, use the exact path pattern from Terraform
+        def appPathPattern = "/app${appSuffix}*"
         
         def ruleArn = sh(
             script: """
