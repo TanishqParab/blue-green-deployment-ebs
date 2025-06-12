@@ -199,6 +199,24 @@ def deployToBlueService(Map config) {
 @NonCPS
 def initialDeploymentParseJson(String jsonText) {
     def parsed = new JsonSlurper().parseText(jsonText)
+    return parsed
+}
+
+@NonCPS
+def initialDeploymentUpdateTaskDef(String jsonText, String imageUri) {
+    def taskDef = new JsonSlurper().parseText(jsonText)
+    taskDef.remove('taskDefinitionArn')
+    taskDef.remove('revision')
+    taskDef.remove('status')
+    taskDef.remove('requiresAttributes')
+    taskDef.remove('compatibilities')
+    taskDef.remove('registeredAt')
+    taskDef.remove('registeredBy')
+    taskDef.remove('deregisteredAt')
+    taskDef.containerDefinitions[0].image = imageUri
+    return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
+}(String jsonText) {
+    def parsed = new JsonSlurper().parseText(jsonText)
     
     // Handle different types of JSON responses
     if (parsed instanceof List) {
