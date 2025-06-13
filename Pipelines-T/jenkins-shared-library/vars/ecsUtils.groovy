@@ -283,23 +283,23 @@ def fetchResources(Map config) {
         
         // Check if app-specific services exist, fall back to default if not
         try {
-            // Check if app-specific blue service exists
+            // Use simple text output to avoid JSON parsing issues
             def blueServiceExists = sh(
                 script: """
-                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "serviceArns[?contains(@,'app${appSuffix}-blue-service')]" --output text
+                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "length(serviceArns[?contains(@,'app${appSuffix}-blue-service')])" --output text
                 """,
                 returnStdout: true
             ).trim()
             
-            // Check if app-specific green service exists
             def greenServiceExists = sh(
                 script: """
-                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "serviceArns[?contains(@,'app${appSuffix}-green-service')]" --output text
+                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "length(serviceArns[?contains(@,'app${appSuffix}-green-service')])" --output text
                 """,
                 returnStdout: true
             ).trim()
             
-            if (!blueServiceExists || !greenServiceExists) {
+            // Check if the count is greater than 0
+            if (blueServiceExists == "0" || greenServiceExists == "0") {
                 result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
                 result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
                 echo "⚠️ App-specific services not found, falling back to default service names"
@@ -332,6 +332,10 @@ def fetchResources(Map config) {
 @NonCPS
 def parseJsonString(String json) {
     try {
+        if (!json || json.trim().isEmpty() || json.trim() == "null") {
+            return []
+        }
+        
         def parsed = new JsonSlurper().parseText(json)
         
         // Handle different types of JSON responses
@@ -349,7 +353,6 @@ def parseJsonString(String json) {
         return [:]
     }
 }
-
 
 
 def ensureTargetGroupAssociation(Map config) {
