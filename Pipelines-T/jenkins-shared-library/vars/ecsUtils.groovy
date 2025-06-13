@@ -366,52 +366,24 @@ def ensureTargetGroupAssociation(Map config) {
     def appName = config.APP_NAME ?: "app_1"
     def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
 
+    // Check if target group is associated with load balancer using text output
     def targetGroupInfo = sh(
         script: """
-        aws elbv2 describe-target-groups --target-group-arns ${config.IDLE_TG_ARN} --query 'TargetGroups[0].LoadBalancerArns' --output json
+        aws elbv2 describe-target-groups --target-group-arns ${config.IDLE_TG_ARN} --query 'TargetGroups[0].LoadBalancerArns' --output text
         """,
         returnStdout: true
     ).trim()
 
-    // Use a @NonCPS helper for JSON parsing with error handling
-    def targetGroupJson = parseJsonWithErrorHandling(targetGroupInfo)
-
-    if (targetGroupJson.isEmpty()) {
+    // If output is empty or "None", create a rule
+    if (!targetGroupInfo || targetGroupInfo.isEmpty() || targetGroupInfo == "None") {
         echo "⚠️ Target group ${config.IDLE_ENV} is not associated with a load balancer. Creating a path-based rule..."
-
-        def rulesJson = sh(
-            script: """
-            aws elbv2 describe-rules --listener-arn ${config.LISTENER_ARN} --query 'Rules[*].Priority' --output json
-            """,
-            returnStdout: true
-        ).trim()
-
-        def priorities = []
-        try {
-            def parsedPriorities = parseJsonWithErrorHandling(rulesJson)
-            if (parsedPriorities) {
-                priorities = parsedPriorities
-                    .findAll { it != 'default' }
-                    .collect { it.toString().isInteger() ? it.toString().toInteger() : 0 }
-                    .sort()
-            }
-        } catch (Exception e) {
-            echo "⚠️ Error parsing rule priorities: ${e.message}. Using default priority."
-        }
-
-        // Use higher starting priorities to avoid conflicts
-        int startPriority = appSuffix == "1" ? 150 : 250
-        int nextPriority = startPriority
         
-        // Find the next available priority
-        while (priorities.contains(nextPriority)) {
-            nextPriority++
-        }
-        
+        // Use fixed priority to avoid parsing issues
+        def nextPriority = 250
         echo "Using rule priority: ${nextPriority}"
         
         // Use app-specific path pattern
-        def pathPattern = appSuffix == "1" ? "/*" : "/app${appSuffix}/*"
+        def pathPattern = "/app${appSuffix}/*"
 
         sh """
         aws elbv2 create-rule \\
