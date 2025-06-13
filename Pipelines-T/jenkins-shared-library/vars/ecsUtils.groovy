@@ -283,23 +283,21 @@ def fetchResources(Map config) {
         
         // Check if app-specific services exist, fall back to default if not
         try {
-            // Use simple text output to avoid JSON parsing issues
-            def blueServiceExists = sh(
+            // Get service names directly to avoid JSON parsing issues
+            def serviceNames = sh(
                 script: """
-                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "length(serviceArns[?contains(@,'app${appSuffix}-blue-service')])" --output text
+                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --output text | tr '\\t' '\\n' | grep -o '[^/]*\$'
                 """,
                 returnStdout: true
-            ).trim()
+            ).trim().split("\\s+")
             
-            def greenServiceExists = sh(
-                script: """
-                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "length(serviceArns[?contains(@,'app${appSuffix}-green-service')])" --output text
-                """,
-                returnStdout: true
-            ).trim()
+            def blueServiceName = "app${appSuffix}-blue-service"
+            def greenServiceName = "app${appSuffix}-green-service"
             
-            // Check if the count is greater than 0
-            if (blueServiceExists == "0" || greenServiceExists == "0") {
+            def blueServiceExists = serviceNames.find { it == blueServiceName }
+            def greenServiceExists = serviceNames.find { it == greenServiceName }
+            
+            if (!blueServiceExists || !greenServiceExists) {
                 result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
                 result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
                 echo "⚠️ App-specific services not found, falling back to default service names"
@@ -327,7 +325,6 @@ def fetchResources(Map config) {
         error "❌ Failed to fetch ECS resources: ${e.message}"
     }
 }
-
 
 @NonCPS
 def parseJsonString(String json) {
