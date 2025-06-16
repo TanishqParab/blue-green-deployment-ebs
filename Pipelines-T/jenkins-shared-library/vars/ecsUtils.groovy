@@ -626,31 +626,75 @@ def updateApplication(Map config) {
 
 @NonCPS
 def parseJsonSafe(String jsonText) {
-    def parsed = new JsonSlurper().parseText(jsonText)
-    def safeMap = [:]
-    safeMap.putAll(parsed)
-    return safeMap
+    try {
+        if (!jsonText || jsonText.trim().isEmpty() || jsonText.trim() == "null") {
+            return [:]
+        }
+        
+        // Check if the text is actually JSON and not an ARN or other string
+        if (!jsonText.trim().startsWith("{") && !jsonText.trim().startsWith("[")) {
+            return [:]
+        }
+        
+        def parsed = new JsonSlurper().parseText(jsonText)
+        def safeMap = [:]
+        safeMap.putAll(parsed)
+        return safeMap
+    } catch (Exception e) {
+        echo "⚠️ Error in parseJsonSafe: ${e.message}"
+        return [:]
+    }
 }
 
 @NonCPS
 def getJsonFieldSafe(String jsonText, String fieldName) {
-    def parsed = new JsonSlurper().parseText(jsonText)
-    return parsed?."${fieldName}"?.toString()
+    try {
+        if (!jsonText || jsonText.trim().isEmpty() || jsonText.trim() == "null") {
+            return null
+        }
+        
+        // Check if the text is actually JSON and not an ARN or other string
+        if (!jsonText.trim().startsWith("{") && !jsonText.trim().startsWith("[")) {
+            return null
+        }
+        
+        def parsed = new JsonSlurper().parseText(jsonText)
+        return parsed?."${fieldName}"?.toString()
+    } catch (Exception e) {
+        echo "⚠️ Error in getJsonFieldSafe: ${e.message}"
+        return null
+    }
 }
+
 
 @NonCPS
 def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appName) {
-    def taskDef = new JsonSlurper().parseText(jsonText)
-    ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
-     'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
-        taskDef.remove(field)
+    try {
+        // Validate input
+        if (!jsonText || jsonText.trim().isEmpty() || !jsonText.trim().startsWith("{")) {
+            throw new Exception("Invalid JSON input: ${jsonText}")
+        }
+        
+        def taskDef = new JsonSlurper().parseText(jsonText)
+        ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
+         'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
+            taskDef.remove(field)
+        }
+        
+        // Use the provided image URI directly (already app-specific)
+        if (taskDef.containerDefinitions && taskDef.containerDefinitions.size() > 0) {
+            taskDef.containerDefinitions[0].image = imageUri
+        } else {
+            throw new Exception("No container definitions found in task definition")
+        }
+        
+        return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
+    } catch (Exception e) {
+        echo "⚠️ Error in updateTaskDefImageAndSerialize: ${e.message}"
+        throw e
     }
-    
-    // Use the provided image URI directly (already app-specific)
-    taskDef.containerDefinitions[0].image = imageUri
-    
-    return JsonOutput.prettyPrint(JsonOutput.toJson(taskDef))
 }
+
 
 
 def testEnvironment(Map config) {
