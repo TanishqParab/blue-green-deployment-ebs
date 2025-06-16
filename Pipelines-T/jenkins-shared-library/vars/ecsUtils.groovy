@@ -454,7 +454,7 @@ def updateApplication(Map config) {
 
         def clusterArns = parseJsonWithErrorHandling(clustersJson)?.clusterArns
         if (!clusterArns || clusterArns.isEmpty()) {
-            error "❌ No ECS clusters found in region ${env.AWS_REGION}"
+            error "❌ No ECS clusters found"
         }
 
         def selectedClusterArn = clusterArns[0]
@@ -499,7 +499,7 @@ def updateApplication(Map config) {
         def getImageTagForService = { serviceName ->
             try {
                 def taskDefArn = sh(
-                    script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
+                    script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --query 'services[0].taskDefinition' --output text || echo ''",
                     returnStdout: true
                 )?.trim()
                 
@@ -508,7 +508,7 @@ def updateApplication(Map config) {
                 }
                 
                 def taskDefJsonText = sh(
-                    script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
+                    script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --query 'taskDefinition' --output json || echo '{}'",
                     returnStdout: true
                 )?.trim()
                 
@@ -558,7 +558,7 @@ def updateApplication(Map config) {
         // Step 4: Tag current image for rollback
         def currentImageInfo = sh(
             script: """
-            aws ecr describe-images --repository-name ${env.ECR_REPO_NAME} --image-ids imageTag=${appName}-latest --region ${env.AWS_REGION} --query 'imageDetails[0].{digest:imageDigest,pushedAt:imagePushedAt}' --output json 2>/dev/null || echo '{}'
+            aws ecr describe-images --repository-name ${env.ECR_REPO_NAME} --image-ids imageTag=${appName}-latest --query 'imageDetails[0].{digest:imageDigest,pushedAt:imagePushedAt}' --output json 2>/dev/null || echo '{}'
             """,
             returnStdout: true
         ).trim()
@@ -784,7 +784,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         throw e
     }
 }
-
 
 
 def testEnvironment(Map config) {
