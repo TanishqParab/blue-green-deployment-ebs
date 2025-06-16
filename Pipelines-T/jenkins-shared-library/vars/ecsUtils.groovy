@@ -1027,6 +1027,23 @@ def updateApplication(Map config) {
             script: "aws ecr describe-repositories --repository-names ${ecrRepoName} --region ${awsRegion} --query 'repositories[0].repositoryUri' --output text",
             returnStdout: true
         ).trim()
+        
+        // Validate ECR URI to ensure it's a valid URI and not JSON or other unexpected format
+        if (!ecrUri || ecrUri.contains("{") || ecrUri.contains("}") || ecrUri.contains("[") || ecrUri.contains("]")) {
+            echo "⚠️ Invalid ECR URI detected: ${ecrUri}. Attempting to fix..."
+            
+            // Try again with explicit region
+            ecrUri = sh(
+                script: "aws ecr describe-repositories --repository-names ${ecrRepoName} --region us-east-1 --query 'repositories[0].repositoryUri' --output text",
+                returnStdout: true
+            ).trim()
+            
+            if (!ecrUri || ecrUri.contains("{") || ecrUri.contains("}") || ecrUri.contains("[") || ecrUri.contains("]")) {
+                error "❌ Failed to get valid ECR repository URI. Cannot proceed with deployment."
+            }
+            
+            echo "✅ Fixed ECR URI: ${ecrUri}"
+        }
 
         echo "🔨 Building and pushing Docker image for app${appSuffix}..."
         sh """
