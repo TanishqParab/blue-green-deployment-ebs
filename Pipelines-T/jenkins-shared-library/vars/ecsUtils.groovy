@@ -446,21 +446,26 @@ def updateApplication(Map config) {
         
         echo "Updating application: ${appName}"
         
-        // Step 1: Dynamically discover ECS cluster
-        def clustersJson = sh(
-            script: "aws ecs list-clusters --output json",
-            returnStdout: true
-        ).trim()
-
-        def clusterArns = parseJsonWithErrorHandling(clustersJson)?.clusterArns
-        if (!clusterArns || clusterArns.isEmpty()) {
-            error "❌ No ECS clusters found"
+        // Step 1: Use the ECS cluster from config or environment
+        if (config.ECS_CLUSTER) {
+            env.ECS_CLUSTER = config.ECS_CLUSTER
+            echo "✅ Using ECS cluster from config: ${env.ECS_CLUSTER}"
+        } else {
+            // Fallback to direct query if needed
+            def clusterName = sh(
+                script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d/ -f2",
+                returnStdout: true
+            ).trim()
+            
+            if (!clusterName || clusterName.isEmpty()) {
+                error "❌ No ECS clusters found"
+            }
+            
+            env.ECS_CLUSTER = clusterName
+            echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
         }
 
-        def selectedClusterArn = clusterArns[0]
-        def selectedClusterName = selectedClusterArn.tokenize('/').last()
-        env.ECS_CLUSTER = selectedClusterName
-        echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
+
 
         // Step 2: Dynamically discover ECS services
         def servicesJson = sh(
