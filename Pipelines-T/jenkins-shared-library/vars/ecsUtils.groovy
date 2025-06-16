@@ -160,10 +160,20 @@ def fetchResources(Map config) {
         result.APP_NAME = appName
         result.APP_SUFFIX = appSuffix
         
-        result.ECS_CLUSTER = sh(
-            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
-            returnStdout: true
-        ).trim()
+        try {
+            result.ECS_CLUSTER = sh(
+                script: "aws ecs list-clusters --region ${env.AWS_REGION} --query 'clusterArns[0]' --output text | cut -d'/' -f2",
+                returnStdout: true
+            ).trim()
+            
+            if (!result.ECS_CLUSTER || result.ECS_CLUSTER.isEmpty()) {
+                result.ECS_CLUSTER = "blue-green-cluster"
+                echo "⚠️ No clusters found via API, using default name: ${result.ECS_CLUSTER}"
+            }
+        } catch (Exception e) {
+            result.ECS_CLUSTER = "blue-green-cluster"
+            echo "⚠️ Error fetching clusters: ${e.message}. Using default name: ${result.ECS_CLUSTER}"
+        }
 
         // Try to get app-specific target groups with the correct naming pattern
         result.BLUE_TG_ARN = sh(
@@ -446,21 +456,35 @@ def updateApplication(Map config) {
         
         echo "Updating application: ${appName}"
         
-        // Step 1: Dynamically discover ECS cluster
-        def clustersJson = sh(
-            script: "aws ecs list-clusters --region ${env.AWS_REGION} --output json",
-            returnStdout: true
-        ).trim()
-
-        def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
-        if (!clusterArns || clusterArns.isEmpty()) {
-            error "❌ No ECS clusters found in region ${env.AWS_REGION}"
+        // Step 1: Use the ECS cluster from config or environment
+        if (config.ECS_CLUSTER) {
+            env.ECS_CLUSTER = config.ECS_CLUSTER
+            echo "✅ Using ECS cluster from config: ${env.ECS_CLUSTER}"
+        } else {
+            // Try to get cluster directly from AWS
+            try {
+                def clustersJson = sh(
+                    script: "aws ecs list-clusters --region ${env.AWS_REGION} --output json",
+                    returnStdout: true
+                ).trim()
+                
+                def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
+                if (!clusterArns || clusterArns.isEmpty()) {
+                    // If no clusters found, use a hardcoded name as fallback
+                    env.ECS_CLUSTER = "blue-green-cluster"
+                    echo "⚠️ No clusters found via API, using default name: ${env.ECS_CLUSTER}"
+                } else {
+                    def selectedClusterArn = clusterArns[0]
+                    def selectedClusterName = selectedClusterArn.tokenize('/').last()
+                    env.ECS_CLUSTER = selectedClusterName
+                    echo "✅ Using ECS cluster from AWS: ${env.ECS_CLUSTER}"
+                }
+            } catch (Exception e) {
+                // Fallback to hardcoded name if API call fails
+                env.ECS_CLUSTER = "blue-green-cluster"
+                echo "⚠️ Error fetching clusters: ${e.message}. Using default name: ${env.ECS_CLUSTER}"
+            }
         }
-
-        def selectedClusterArn = clusterArns[0]
-        def selectedClusterName = selectedClusterArn.tokenize('/').last()
-        env.ECS_CLUSTER = selectedClusterName
-        echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
 
         // Step 2: Dynamically discover ECS services
         def servicesJson = sh(
