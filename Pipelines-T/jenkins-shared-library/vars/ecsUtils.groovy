@@ -465,35 +465,9 @@ def updateApplication(Map config) {
             echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
         }
 
-        // Step 2: Dynamically discover ECS services using direct text output
-        def serviceNamesOutput = sh(
-            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output text | tr '\\t' '\\n' | grep -o '[^/]*\$'",
-            returnStdout: true
-        ).trim()
-        
-        def serviceNames = serviceNamesOutput ? serviceNamesOutput.split("\\s+") : []
-        
-        if (serviceNames.length == 0) {
-            error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
-        }
-        
-        echo "Discovered ECS services: ${serviceNames.join(', ')}"
-
-        // Look for app-specific services first with the correct naming pattern
-        def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
-        def greenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
-        
-        // Fall back to default services if app-specific ones don't exist
-        if (!blueService) {
-            blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
-        }
-        if (!greenService) {
-            greenService = serviceNames.find { it.toLowerCase() == "green-service" }
-        }
-
-        if (!blueService || !greenService) {
-            error "❌ Could not find both 'blue' and 'green' ECS services in cluster ${env.ECS_CLUSTER}. Found services: ${serviceNames.join(', ')}"
-        }
+        // Step 2: Use hardcoded service names based on app suffix
+        def blueService = "app${appSuffix}-blue-service"
+        def greenService = "app${appSuffix}-green-service"
         
         echo "Using blue service: ${blueService}"
         echo "Using green service: ${greenService}"
@@ -608,78 +582,18 @@ def updateApplication(Map config) {
         // Step 6: Update ECS Service
         echo "Updating ${env.IDLE_ENV} service (${env.IDLE_SERVICE})..."
 
-        // Try to get task definition ARN with fallback to active service
-        def taskDefArn
-        try {
-            taskDefArn = sh(
-                script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
-                returnStdout: true
-            )?.trim()
-            
-            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
-                throw new Exception("No task definition found")
-            }
-        } catch (Exception e) {
-            echo "⚠️ No valid task definition found for ${env.IDLE_SERVICE}, using active service task definition"
-            def activeService = (env.ACTIVE_ENV == "BLUE") ? blueService : greenService
-            taskDefArn = sh(
-                script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${activeService} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
-                returnStdout: true
-            )?.trim()
-            
-            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
-                // Use a specific task definition family based on environment and app
-                def taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
-                echo "⚠️ Using specific task definition family: ${taskDefFamily}"
-                
-                // Skip the ARN lookup and directly get the task definition JSON
-                taskDefArn = taskDefFamily
-            }
-        }
-
+        // Use hardcoded task definition based on environment and app suffix
+        def taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
+        echo "Using task definition family: ${taskDefFamily}"
+        
         // Get the task definition JSON directly
-        def taskDefJsonText
-        try {
-            // Always use the task definition family name directly
-            def taskDefFamily
-            if (taskDefArn.startsWith("arn:")) {
-                // Extract family name from ARN if needed
-                def parts = taskDefArn.split("/")
-                if (parts.size() > 1) {
-                    taskDefFamily = parts[1].split(":")[0]
-                } else {
-                    taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
-                }
-            } else {
-                taskDefFamily = taskDefArn
-            }
-            
-            echo "Using task definition family: ${taskDefFamily}"
-            
-            taskDefJsonText = sh(
-                script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
-                returnStdout: true
-            )?.trim()
-            
-            // Test if it's valid JSON
-            def testJson = parseJsonSafe(taskDefJsonText)
-            if (!testJson || testJson.isEmpty()) {
-                throw new Exception("Invalid JSON")
-            }
-        } catch (Exception e) {
-            echo "⚠️ Error getting task definition JSON: ${e.message}, trying fallback"
-            // Direct fallback to known task definition family
-            def taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
-            echo "⚠️ Fallback to task definition family: ${taskDefFamily}"
-            
-            taskDefJsonText = sh(
-                script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
-                returnStdout: true
-            )?.trim()
-        }
+        def taskDefJsonText = sh(
+            script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
+            returnStdout: true
+        )?.trim()
 
         if (!taskDefJsonText || taskDefJsonText == "null" || taskDefJsonText == "{}") {
-            error "❌ Failed to get task definition JSON for ARN ${taskDefArn}"
+            error "❌ Failed to get task definition JSON for family ${taskDefFamily}"
         }
 
         // Update task definition with new image
