@@ -563,7 +563,7 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
-        def imageDigest = parseJsonWithErrorHandling(currentImageInfo)?.digest
+        def imageDigest = getJsonFieldSafe(currentImageInfo, 'digest')
 
         if (imageDigest) {
             def timestamp = new Date().format("yyyyMMdd-HHmmss")
@@ -784,6 +784,7 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         throw e
     }
 }
+
 
 def testEnvironment(Map config) {
     echo "🔍 Testing ${env.IDLE_ENV} environment..."
