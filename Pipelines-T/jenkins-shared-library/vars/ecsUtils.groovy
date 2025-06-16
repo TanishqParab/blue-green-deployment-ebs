@@ -160,20 +160,10 @@ def fetchResources(Map config) {
         result.APP_NAME = appName
         result.APP_SUFFIX = appSuffix
         
-        try {
-            result.ECS_CLUSTER = sh(
-                script: "aws ecs list-clusters --region ${env.AWS_REGION} --query 'clusterArns[0]' --output text | cut -d'/' -f2",
-                returnStdout: true
-            ).trim()
-            
-            if (!result.ECS_CLUSTER || result.ECS_CLUSTER.isEmpty()) {
-                result.ECS_CLUSTER = "blue-green-cluster"
-                echo "⚠️ No clusters found via API, using default name: ${result.ECS_CLUSTER}"
-            }
-        } catch (Exception e) {
-            result.ECS_CLUSTER = "blue-green-cluster"
-            echo "⚠️ Error fetching clusters: ${e.message}. Using default name: ${result.ECS_CLUSTER}"
-        }
+        result.ECS_CLUSTER = sh(
+            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
+            returnStdout: true
+        ).trim()
 
         // Try to get app-specific target groups with the correct naming pattern
         result.BLUE_TG_ARN = sh(
@@ -456,67 +446,52 @@ def updateApplication(Map config) {
         
         echo "Updating application: ${appName}"
         
-        // Step 1: Use the ECS cluster from config or environment
-        if (config.ECS_CLUSTER) {
-            env.ECS_CLUSTER = config.ECS_CLUSTER
-            echo "✅ Using ECS cluster from config: ${env.ECS_CLUSTER}"
-        } else {
-            // Try to get cluster directly from AWS
-            try {
-                def clustersJson = sh(
-                    script: "aws ecs list-clusters --region ${env.AWS_REGION} --output json",
-                    returnStdout: true
-                ).trim()
-                
-                def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
-                if (!clusterArns || clusterArns.isEmpty()) {
-                    // If no clusters found, use a hardcoded name as fallback
-                    env.ECS_CLUSTER = "blue-green-cluster"
-                    echo "⚠️ No clusters found via API, using default name: ${env.ECS_CLUSTER}"
-                } else {
-                    def selectedClusterArn = clusterArns[0]
-                    def selectedClusterName = selectedClusterArn.tokenize('/').last()
-                    env.ECS_CLUSTER = selectedClusterName
-                    echo "✅ Using ECS cluster from AWS: ${env.ECS_CLUSTER}"
-                }
-            } catch (Exception e) {
-                // Fallback to hardcoded name if API call fails
-                env.ECS_CLUSTER = "blue-green-cluster"
-                echo "⚠️ Error fetching clusters: ${e.message}. Using default name: ${env.ECS_CLUSTER}"
-            }
+        // Step 1: Dynamically discover ECS cluster
+        def clustersJson = sh(
+            script: "aws ecs list-clusters --region ${env.AWS_REGION} --output json",
+            returnStdout: true
+        ).trim()
+
+        def clusterArns = parseJsonWithErrorHandling(clustersJson)?.clusterArns
+        if (!clusterArns || clusterArns.isEmpty()) {
+            error "❌ No ECS clusters found in region ${env.AWS_REGION}"
         }
 
-        // Step 2: Dynamically discover ECS services or use default service names
-        def serviceArns = []
-        try {
-            def servicesJson = sh(
-                script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --region ${env.AWS_REGION} --output json",
-                returnStdout: true
-            ).trim()
+        def selectedClusterArn = clusterArns[0]
+        def selectedClusterName = selectedClusterArn.tokenize('/').last()
+        env.ECS_CLUSTER = selectedClusterName
+        echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
 
-            serviceArns = parseJsonSafe(servicesJson)?.serviceArns ?: []
-        } catch (Exception e) {
-            echo "⚠️ Error listing services: ${e.message}. Will use default service names."
+        // Step 2: Dynamically discover ECS services
+        def servicesJson = sh(
+            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --region ${env.AWS_REGION} --output json",
+            returnStdout: true
+        ).trim()
+
+        def serviceArns = parseJsonWithErrorHandling(servicesJson)?.serviceArns
+        if (!serviceArns || serviceArns.isEmpty()) {
+            error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
+        }
+
+        def serviceNames = serviceArns.collect { it.tokenize('/').last() }
+        echo "Discovered ECS services: ${serviceNames}"
+
+        // Look for app-specific services first with the correct naming pattern
+        def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
+        def greenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
+        
+        // Fall back to default services if app-specific ones don't exist
+        if (!blueService) {
+            blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
+        }
+        if (!greenService) {
+            greenService = serviceNames.find { it.toLowerCase() == "green-service" }
+        }
+
+        if (!blueService || !greenService) {
+            error "❌ Could not find both 'blue' and 'green' ECS services in cluster ${env.ECS_CLUSTER}. Found services: ${serviceNames}"
         }
         
-        // If no services found, we'll use default service names
-        def blueService = "blue-service"
-        def greenService = "green-service"
-        
-        if (!serviceArns.isEmpty()) {
-            def serviceNames = serviceArns.collect { it.tokenize('/').last() }
-            echo "Discovered ECS services: ${serviceNames}"
-
-            // Look for app-specific services first with the correct naming pattern
-            def appSpecificBlue = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
-            def appSpecificGreen = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
-            
-            if (appSpecificBlue) blueService = appSpecificBlue
-            if (appSpecificGreen) greenService = appSpecificGreen
-        } else {
-            echo "⚠️ No services found in cluster ${env.ECS_CLUSTER}. Using default service names."
-        }
-
         echo "Using blue service: ${blueService}"
         echo "Using green service: ${greenService}"
 
@@ -624,7 +599,6 @@ def updateApplication(Map config) {
             docker push ${ecrUri}:${imageTag}
         """
 
-        // Store the clean ECR URI without duplicating the domain
         env.IMAGE_URI = "${ecrUri}:${imageTag}"
         echo "✅ Image pushed: ${env.IMAGE_URI}"
 
@@ -795,17 +769,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
          'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
             taskDef.remove(field)
-        }
-        
-        // Fix for duplicate domain in image URI
-        if (imageUri.contains(".dkr.ecr.") && imageUri.count(".dkr.ecr.") > 1) {
-            // Extract the correct URI format: accountId.dkr.ecr.region.amazonaws.com/repo:tag
-            def parts = imageUri.split("\\.dkr\\.ecr\\.")
-            if (parts.length >= 2) {
-                def accountId = parts[0]
-                def remainder = parts[1]
-                imageUri = "${accountId}.dkr.ecr.${remainder}"
-            }
         }
         
         // Use the provided image URI directly (already app-specific)
@@ -1029,11 +992,11 @@ def scaleDownOldEnvironment(Map config) {
     if (!config.ECS_CLUSTER) {
         echo "⚙️ ECS_CLUSTER not set, fetching dynamically..."
         def ecsClusterId = sh(
-            script: "aws ecs list-clusters --region ${env.AWS_REGION} --query 'clusterArns[0]' --output text | cut -d'/' -f2",
+            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
             returnStdout: true
         ).trim()
         if (!ecsClusterId) {
-            error "Failed to fetch ECS cluster ID dynamically in region ${env.AWS_REGION}"
+            error "Failed to fetch ECS cluster ID dynamically"
         }
         config.ECS_CLUSTER = ecsClusterId
         echo "✅ Dynamically fetched ECS_CLUSTER: ${config.ECS_CLUSTER}"
@@ -1043,7 +1006,7 @@ def scaleDownOldEnvironment(Map config) {
     if (!config.ALB_ARN) {
         echo "⚙️ ALB_ARN not set, fetching dynamically..."
         def albArn = sh(
-            script: "aws elbv2 describe-load-balancers --region ${env.AWS_REGION} --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text",
+            script: "aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text",
             returnStdout: true
         ).trim()
         if (!albArn || albArn == 'None') {
@@ -1057,7 +1020,7 @@ def scaleDownOldEnvironment(Map config) {
     if (!config.LISTENER_ARN) {
         echo "⚙️ LISTENER_ARN not set, fetching dynamically..."
         def listenerArn = sh(
-            script: "aws elbv2 describe-listeners --region ${env.AWS_REGION} --load-balancer-arn ${config.ALB_ARN} --query 'Listeners[0].ListenerArn' --output text",
+            script: "aws elbv2 describe-listeners --load-balancer-arn ${config.ALB_ARN} --query 'Listeners[0].ListenerArn' --output text",
             returnStdout: true
         ).trim()
         if (!listenerArn || listenerArn == 'None') {
@@ -1069,11 +1032,11 @@ def scaleDownOldEnvironment(Map config) {
 
     // --- Fetch Blue and Green Target Group ARNs dynamically ---
     def blueTgArn = sh(
-        script: "aws elbv2 describe-target-groups --region ${env.AWS_REGION} --names blue-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --region ${env.AWS_REGION} --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+        script: "aws elbv2 describe-target-groups --names blue-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
         returnStdout: true
     ).trim()
     def greenTgArn = sh(
-        script: "aws elbv2 describe-target-groups --region ${env.AWS_REGION} --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --region ${env.AWS_REGION} --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+        script: "aws elbv2 describe-target-groups --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
         returnStdout: true
     ).trim()
     if (!blueTgArn || blueTgArn == 'None') error "Blue target group ARN not found"
@@ -1089,7 +1052,7 @@ def scaleDownOldEnvironment(Map config) {
         // Use a safer approach to find the rule
         def ruleArn = sh(
             script: """
-                aws elbv2 describe-rules --region ${env.AWS_REGION} --listener-arn ${config.LISTENER_ARN} --output json | \\
+                aws elbv2 describe-rules --listener-arn ${config.LISTENER_ARN} --output json | \\
                 jq -r '.Rules[] | select(.Conditions != null) | select((.Conditions[].PathPatternConfig.Values | arrays) and (.Conditions[].PathPatternConfig.Values[] | contains("${appPathPattern}"))) | .RuleArn' | head -1
             """,
             returnStdout: true
@@ -1101,7 +1064,7 @@ def scaleDownOldEnvironment(Map config) {
             // Get target group from app-specific rule
             activeTgArn = sh(
                 script: """
-                    aws elbv2 describe-rules --region ${env.AWS_REGION} --rule-arns ${ruleArn} --output json | \\
+                    aws elbv2 describe-rules --rule-arns ${ruleArn} --output json | \\
                     jq -r '.Rules[0].Actions[0].TargetGroupArn // .Rules[0].Actions[0].ForwardConfig.TargetGroups[0].TargetGroupArn'
                 """,
                 returnStdout: true
@@ -1110,7 +1073,7 @@ def scaleDownOldEnvironment(Map config) {
             // For app1, check default action
             activeTgArn = sh(
                 script: """
-                    aws elbv2 describe-listeners --region ${env.AWS_REGION} --listener-arns ${config.LISTENER_ARN} --output json | \\
+                    aws elbv2 describe-listeners --listener-arns ${config.LISTENER_ARN} --output json | \\
                     jq -r '.Listeners[0].DefaultActions[0].ForwardConfig.TargetGroups[] | select(.Weight == 1) | .TargetGroupArn'
                 """,
                 returnStdout: true
@@ -1153,7 +1116,7 @@ def scaleDownOldEnvironment(Map config) {
         // Try app-specific service name first
         def expectedIdleServiceName = "app${appSuffix}-${idleEnvLower}-service"
         def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${config.ECS_CLUSTER} --region ${env.AWS_REGION} --query 'serviceArns' --output json",
+            script: "aws ecs list-services --cluster ${config.ECS_CLUSTER} --query 'serviceArns' --output json",
             returnStdout: true
         ).trim()
         def services = new JsonSlurper().parseText(servicesJson)
@@ -1185,7 +1148,7 @@ def scaleDownOldEnvironment(Map config) {
     echo "⏳ Waiting for all targets in ${config.IDLE_ENV} TG to become healthy before scaling down old environment..."
     while (attempt < maxAttempts) {
         def healthJson = sh(
-            script: "aws elbv2 describe-target-health --region ${env.AWS_REGION} --target-group-arn ${config.IDLE_TG_ARN} --query 'TargetHealthDescriptions[*].TargetHealth.State' --output json",
+            script: "aws elbv2 describe-target-health --target-group-arn ${config.IDLE_TG_ARN} --query 'TargetHealthDescriptions[*].TargetHealth.State' --output json",
             returnStdout: true
         ).trim()
         def states = new JsonSlurper().parseText(healthJson)
@@ -1208,16 +1171,14 @@ def scaleDownOldEnvironment(Map config) {
         aws ecs update-service \\
           --cluster ${config.ECS_CLUSTER} \\
           --service ${config.IDLE_SERVICE} \\
-          --desired-count 0 \\
-          --region ${env.AWS_REGION}
+          --desired-count 0
         """
         echo "✅ Scaled down ${config.IDLE_SERVICE}"
 
         sh """
         aws ecs wait services-stable \\
           --cluster ${config.ECS_CLUSTER} \\
-          --services ${config.IDLE_SERVICE} \\
-          --region ${env.AWS_REGION}
+          --services ${config.IDLE_SERVICE}
         """
         echo "✅ ${config.IDLE_SERVICE} is now stable (scaled down)"
     } catch (Exception e) {
