@@ -565,6 +565,11 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
+        // Validate ECR URI
+        if (!ecrUri || ecrUri.startsWith("{")) {
+            error "❌ Invalid ECR repository URI: ${ecrUri}"
+        }
+
         // Use explicit imageTag variable to ensure consistency
         def imageTag = "${appName}-latest"
         
@@ -631,6 +636,7 @@ def updateApplication(Map config) {
         error "Failed to update ECS application"
     }
 }
+
 
 
 @NonCPS
