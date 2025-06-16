@@ -458,15 +458,17 @@ def updateApplication(Map config) {
         sh """
             # Authenticate Docker to ECR
             aws ecr get-login-password --region ${config.awsRegion ?: env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
-            
+        """
+        
+        sh """
             # Navigate to the directory with Dockerfile
             cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
             
             # Build the Docker image with latest tag first
-            docker build -t ${config.ecrRepoName ?: env.ECR_REPO_NAME}:latest .
+            docker build -t ${ecrUri}:latest .
             
             # Tag the image with app-specific latest tag
-            docker tag ${config.ecrRepoName ?: env.ECR_REPO_NAME}:latest ${ecrUri}:${appName}-latest
+            docker tag ${ecrUri}:latest ${ecrUri}:${appName}-latest
             
             # Push the app-specific latest tag
             docker push ${ecrUri}:${appName}-latest
