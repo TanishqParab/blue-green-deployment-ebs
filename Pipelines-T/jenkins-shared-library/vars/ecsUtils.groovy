@@ -495,36 +495,47 @@ def updateApplication(Map config) {
         }
 
         def serviceNames = serviceArns.collect { it.tokenize('/').last() }
-        echo "Discovered ECS services: ${serviceNames}"
+        echo "Discovered ECS services: ${serviceNames.join(', ')}"
 
-        // Look for app-specific services first with the correct naming pattern
+        // Look for app-specific services with the correct naming pattern
         def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
         def greenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
         
         // Fall back to default services if app-specific ones don't exist
         if (!blueService) {
             blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
+            echo "Using default blue service: ${blueService}"
+        } else {
+            echo "Using app-specific blue service: ${blueService}"
         }
+        
         if (!greenService) {
             greenService = serviceNames.find { it.toLowerCase() == "green-service" }
+            echo "Using default green service: ${greenService}"
+        } else {
+            echo "Using app-specific green service: ${greenService}"
         }
 
         if (!blueService || !greenService) {
             error "❌ Could not find both 'blue' and 'green' ECS services in cluster ${env.ECS_CLUSTER}. Found services: ${serviceNames}"
         }
         
-        echo "Using blue service: ${blueService}"
-        echo "Using green service: ${greenService}"
+        echo "✅ Using blue service: ${blueService}"
+        echo "✅ Using green service: ${greenService}"
 
         // Helper to get image tag for a service
         def getImageTagForService = { serviceName ->
             try {
+                echo "Getting task definition for service: ${serviceName}"
                 def taskDefArn = sh(
                     script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --query 'services[0].taskDefinition' --output text || echo ''",
                     returnStdout: true
                 )?.trim()
                 
+                echo "Task definition ARN: ${taskDefArn}"
+                
                 if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
+                    echo "⚠️ No task definition found for service ${serviceName}"
                     return ""
                 }
                 
@@ -535,11 +546,14 @@ def updateApplication(Map config) {
                 
                 def taskDefJson = parseJsonSafe(taskDefJsonText)
                 if (!taskDefJson || !taskDefJson.containerDefinitions || taskDefJson.containerDefinitions.isEmpty()) {
+                    echo "⚠️ No container definitions found in task definition for service ${serviceName}"
                     return ""
                 }
                 
                 def image = taskDefJson.containerDefinitions[0].image
+                echo "Image for service ${serviceName}: ${image}"
                 def imageTag = image?.tokenize(':')?.last() ?: ""
+                echo "Image tag for service ${serviceName}: ${imageTag}"
                 return imageTag
             } catch (Exception e) {
                 echo "⚠️ Error getting image tag for service ${serviceName}: ${e.message}"
@@ -555,10 +569,16 @@ def updateApplication(Map config) {
 
         // Determine active environment based on app_*-latest tags
         def appLatestTag = "${appName}-latest"
+        echo "Looking for image tag: ${appLatestTag}"
+        echo "Blue image tag: ${blueImageTag}"
+        echo "Green image tag: ${greenImageTag}"
+        
         if (blueImageTag.contains(appLatestTag) && !greenImageTag.contains(appLatestTag)) {
             env.ACTIVE_ENV = "BLUE"
+            echo "✅ Determined ACTIVE_ENV: BLUE based on image tags"
         } else if (greenImageTag.contains(appLatestTag) && !blueImageTag.contains(appLatestTag)) {
             env.ACTIVE_ENV = "GREEN"
+            echo "✅ Determined ACTIVE_ENV: GREEN based on image tags"
         } else {
             echo "⚠️ Could not determine ACTIVE_ENV from image tags clearly. Defaulting ACTIVE_ENV to BLUE"
             env.ACTIVE_ENV = "BLUE"
@@ -573,8 +593,10 @@ def updateApplication(Map config) {
         echo "ACTIVE_ENV: ${env.ACTIVE_ENV}"
         echo "Determined IDLE_ENV: ${env.IDLE_ENV}"
 
+        env.ACTIVE_SERVICE = (env.ACTIVE_ENV == "BLUE") ? blueService : greenService
         env.IDLE_SERVICE = (env.IDLE_ENV == "BLUE") ? blueService : greenService
-        echo "Selected IDLE_SERVICE: ${env.IDLE_SERVICE}"
+        echo "✅ Selected ACTIVE_SERVICE: ${env.ACTIVE_SERVICE}"
+        echo "✅ Selected IDLE_SERVICE: ${env.IDLE_SERVICE}"
 
         // Step 3: Get AWS region if not set
         if (!env.AWS_REGION && config.awsRegion) {
