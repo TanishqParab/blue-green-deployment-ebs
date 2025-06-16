@@ -785,7 +785,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
     }
 }
 
-
 def testEnvironment(Map config) {
     echo "🔍 Testing ${env.IDLE_ENV} environment..."
 
@@ -1162,9 +1161,8 @@ def scaleDownOldEnvironment(Map config) {
         attempt++
         sleep 10
     }
-    // Skip the error check for zero healthy targets
-    if (attempt >= maxAttempts) {
-        echo "⚠️ Warning: Not all targets in ${config.IDLE_ENV} TG are healthy after waiting, but continuing anyway."
+    if (healthyCount == 0) {
+        error "❌ No healthy targets in ${config.IDLE_ENV} TG after waiting."
     }
 
     // --- Scale down the IDLE ECS service ---
