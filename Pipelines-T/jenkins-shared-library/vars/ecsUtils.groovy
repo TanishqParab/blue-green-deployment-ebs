@@ -431,6 +431,7 @@ def parseJsonWithErrorHandling(String text) {
 
 import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
+import com.cloudbees.groovy.cps.NonCPS
 
 def updateApplication(Map config) {
     echo "Running ECS update application logic..."
@@ -452,9 +453,10 @@ def updateApplication(Map config) {
         // Debug statements to check input parameters
         echo "DEBUG: Received config: ${config}"
         echo "DEBUG: appName from config: ${config.appName}"
-        
+
         // Use the app detected in detectChanges or from config
-        def appName = env.CHANGED_APP ?: config.APP_NAME ?: config.appName ?: "app_1"
+        def changedApp = env.CHANGED_APP ?: null
+        def appName = changedApp ?: config.appName ?: config.APP_NAME ?: "app_1"
         def appSuffix = appName.replace("app_", "")
         
         echo "DEBUG: Using appName: ${appName}"
@@ -463,38 +465,39 @@ def updateApplication(Map config) {
         echo "Updating application: ${appName}"
         
         // Step 1: Dynamically discover ECS cluster with retries and fallback
-        def clusterName = config.ECS_CLUSTER ?: ""
+        def clusterName = config.ecsCluster ?: config.ECS_CLUSTER ?: ""
         if (!clusterName) {
             echo "⚙️ ECS_CLUSTER not set, fetching dynamically..."
             int retries = 3
             int attempt = 0
             def clusterArns = []
             
-            while (attempt < retries && clusterArns.empty) {
+            while (attempt < retries && clusterArns.isEmpty()) {
                 attempt++
                 try {
+                    def region = config.awsRegion ?: error("❌ awsRegion must be specified in config")
                     def clustersOutput = sh(
-                        script: "aws ecs list-clusters --region ${config.awsRegion} --output json || echo '{}'",
+                        script: "aws ecs list-clusters --region ${region} --output json || echo '{}'",
                         returnStdout: true
                     ).trim()
                     
                     def clustersJson = parseJsonSafe(clustersOutput)
                     clusterArns = clustersJson?.clusterArns ?: []
                     
-                    if (clusterArns.empty && attempt < retries) {
+                    if (clusterArns.isEmpty() && attempt < retries) {
                         echo "⚠️ No clusters found (attempt ${attempt}/${retries}), retrying..."
-                        sleep(5)
+                        sleep(time: 5, unit: 'SECONDS')
                     }
                 } catch (Exception e) {
                     echo "⚠️ Error fetching clusters (attempt ${attempt}/${retries}): ${e.message}"
                     if (attempt >= retries) {
                         throw e
                     }
-                    sleep(5)
+                    sleep(time: 5, unit: 'SECONDS')
                 }
             }
             
-            if (clusterArns.empty) {
+            if (clusterArns.isEmpty()) {
                 // Fallback to Terraform output
                 echo "⚠️ No ECS clusters found via API after ${retries} attempts, trying Terraform output..."
                 try {
@@ -517,8 +520,7 @@ def updateApplication(Map config) {
         env.ECS_CLUSTER = clusterName
         echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
 
-        // [Rest of the implementation remains the same as previous...]
-        // Only showing the NonCPS methods below for clarity
+        // Continue with the rest of your update logic here...
 
     } catch (Exception e) {
         echo "❌ Error occurred during ECS update:\n${e}"
@@ -527,7 +529,6 @@ def updateApplication(Map config) {
     }
 }
 
-// All NonCPS methods must be outside the main method
 @NonCPS
 def parseJsonSafe(String jsonText) {
     try {
@@ -546,9 +547,14 @@ def parseJsonSafe(String jsonText) {
         }
         
         def parsed = new JsonSlurper().parseText(jsonText)
-        def safeMap = [:]
-        safeMap.putAll(parsed)
-        return safeMap
+        if (parsed instanceof Map) {
+            def safeMap = [:]
+            safeMap.putAll(parsed)
+            return safeMap
+        } else {
+            // If parsed is a List or other type, return as-is
+            return parsed
+        }
     } catch (Exception e) {
         echo "⚠️ Error in parseJsonSafe: ${e.message}"
         return [:]
@@ -562,7 +568,6 @@ def getJsonFieldSafe(String jsonText, String fieldName) {
             return null
         }
         
-        // Check if the text is actually JSON and not an ARN or other string
         if (!jsonText.trim().startsWith("{") && !jsonText.trim().startsWith("[")) {
             return null
         }
@@ -578,7 +583,6 @@ def getJsonFieldSafe(String jsonText, String fieldName) {
 @NonCPS
 def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appName) {
     try {
-        // Validate input
         if (!jsonText || jsonText.trim().isEmpty() || !jsonText.trim().startsWith("{")) {
             throw new Exception("Invalid JSON input: ${jsonText}")
         }
@@ -589,7 +593,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
             taskDef.remove(field)
         }
         
-        // Use the provided image URI directly (already app-specific)
         if (taskDef.containerDefinitions && taskDef.containerDefinitions.size() > 0) {
             taskDef.containerDefinitions[0].image = imageUri
         } else {
