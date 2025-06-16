@@ -448,7 +448,7 @@ def updateApplication(Map config) {
         
         // Step 1: Dynamically discover ECS cluster
         def clustersJson = sh(
-            script: "aws ecs list-clusters --region ${env.AWS_REGION} --output json",
+            script: "aws ecs list-clusters --output json",
             returnStdout: true
         ).trim()
 
@@ -464,7 +464,7 @@ def updateApplication(Map config) {
 
         // Step 2: Dynamically discover ECS services
         def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --region ${env.AWS_REGION} --output json",
+            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output json",
             returnStdout: true
         ).trim()
 
@@ -512,7 +512,7 @@ def updateApplication(Map config) {
                     returnStdout: true
                 )?.trim()
                 
-                def taskDefJson = parseJsonSafe(taskDefJsonText)
+                def taskDefJson = parseJsonWithErrorHandling(taskDefJsonText)
                 if (!taskDefJson || !taskDefJson.containerDefinitions || taskDefJson.containerDefinitions.isEmpty()) {
                     return ""
                 }
@@ -563,7 +563,7 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
-        def imageDigest = getJsonFieldSafe(currentImageInfo, 'digest')
+        def imageDigest = parseJsonWithErrorHandling(currentImageInfo)?.digest
 
         if (imageDigest) {
             def timestamp = new Date().format("yyyyMMdd-HHmmss")
@@ -784,6 +784,7 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         throw e
     }
 }
+
 
 
 def testEnvironment(Map config) {
