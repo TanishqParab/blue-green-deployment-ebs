@@ -465,16 +465,15 @@ def updateApplication(Map config) {
             echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
         }
 
-
-
-        // Step 2: Dynamically discover ECS services
         // Step 2: Dynamically discover ECS services using direct text output
-        def serviceNames = sh(
+        def serviceNamesOutput = sh(
             script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output text | tr '\\t' '\\n' | grep -o '[^/]*\$'",
             returnStdout: true
-        ).trim().split("\\s+")
+        ).trim()
         
-        if (!serviceNames || serviceNames.isEmpty()) {
+        def serviceNames = serviceNamesOutput ? serviceNamesOutput.split("\\s+") : []
+        
+        if (serviceNames.length == 0) {
             error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
         }
         
@@ -718,6 +717,7 @@ def updateApplication(Map config) {
         error "Failed to update ECS application"
     }
 }
+
 
 @NonCPS
 def parseJsonSafe(String jsonText) {
