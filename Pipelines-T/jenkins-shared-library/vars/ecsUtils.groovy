@@ -29,16 +29,42 @@ def waitForServices(Map config) {
         cluster = "default"
     }
     
-    // Verify cluster exists before proceeding
-    def clusterExists = sh(
+    // Verify cluster exists before proceeding - try multiple regions
+    def clusterExists = "MISSING"
+    def regionsToTry = ["", "us-east-1", "us-west-2", "eu-west-1"]
+    
+    echo "🔍 Verifying cluster '${cluster}' exists..."
+    
+    // First try without specifying region (uses default from AWS config)
+    clusterExists = sh(
         script: """
             aws ecs describe-clusters --clusters ${cluster} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
         """,
         returnStdout: true
     ).trim()
     
+    // If not found, try with specific regions
     if (clusterExists == "MISSING") {
-        echo "⚠️ Warning: Cluster '${cluster}' not found. Services cannot be checked."
+        for (def region : regionsToTry) {
+            if (region) {
+                echo "🔍 Trying to find cluster '${cluster}' in region ${region}..."
+                clusterExists = sh(
+                    script: """
+                        aws ecs describe-clusters --clusters ${cluster} --region ${region} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+                    """,
+                    returnStdout: true
+                ).trim()
+                
+                if (clusterExists != "MISSING") {
+                    echo "✅ Found cluster '${cluster}' in region ${region}"
+                    break
+                }
+            }
+        }
+    }
+    
+    if (clusterExists == "MISSING") {
+        echo "⚠️ Warning: Cluster '${cluster}' not found in any region. Services cannot be checked."
         return
     }
     
@@ -311,14 +337,72 @@ def fetchResources(Map config) {
     result.APP_SUFFIX = appSuffix
 
     try {
-        // Fetch ECS cluster
-        result.ECS_CLUSTER = sh(
-            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
-            returnStdout: true
-        ).trim()
+        // Fetch ECS cluster with multiple approaches
+        def regionsToTry = ["", "us-east-1", "us-west-2", "eu-west-1"]
+        def clusterFound = false
         
-        if (!result.ECS_CLUSTER || result.ECS_CLUSTER == 'None') {
-            error "Failed to fetch ECS cluster for app${appSuffix}"
+        echo "🔍 Attempting to find ECS cluster using multiple methods..."
+        
+        // First try without specifying region
+        try {
+            result.ECS_CLUSTER = sh(
+                script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
+                returnStdout: true
+            ).trim()
+            
+            if (result.ECS_CLUSTER && result.ECS_CLUSTER != 'None') {
+                // Verify this cluster exists
+                def clusterExists = sh(
+                    script: """
+                        aws ecs describe-clusters --clusters ${result.ECS_CLUSTER} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+                    """,
+                    returnStdout: true
+                ).trim()
+                
+                if (clusterExists != "MISSING") {
+                    echo "✅ Found ECS cluster using default region: ${result.ECS_CLUSTER}"
+                    clusterFound = true
+                }
+            }
+        } catch (Exception e) {
+            echo "⚠️ Error finding cluster with default region: ${e.message}"
+        }
+        
+        // If not found, try with specific regions
+        if (!clusterFound) {
+            for (def region : regionsToTry) {
+                if (region) {
+                    try {
+                        echo "🔍 Trying to find cluster in region ${region}..."
+                        result.ECS_CLUSTER = sh(
+                            script: "aws ecs list-clusters --region ${region} --query 'clusterArns[0]' --output text | cut -d'/' -f2",
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (result.ECS_CLUSTER && result.ECS_CLUSTER != 'None') {
+                            // Verify this cluster exists
+                            def clusterExists = sh(
+                                script: """
+                                    aws ecs describe-clusters --clusters ${result.ECS_CLUSTER} --region ${region} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+                                """,
+                                returnStdout: true
+                            ).trim()
+                            
+                            if (clusterExists != "MISSING") {
+                                echo "✅ Found ECS cluster in region ${region}: ${result.ECS_CLUSTER}"
+                                clusterFound = true
+                                break
+                            }
+                        }
+                    } catch (Exception e) {
+                        echo "⚠️ Error finding cluster in region ${region}: ${e.message}"
+                    }
+                }
+            }
+        }
+        
+        if (!result.ECS_CLUSTER || result.ECS_CLUSTER == 'None' || !clusterFound) {
+            error "Failed to fetch ECS cluster for app${appSuffix} in any region"
         }
 
         // Try to get app-specific target groups first, fall back to default if not found
@@ -680,32 +764,110 @@ def updateApplication(Map config) {
             }
         }
         
-        // Step 1: Dynamically discover ECS cluster
-        def clustersJson = sh(
-            script: "aws ecs list-clusters --region ${awsRegion} --output json",
-            returnStdout: true
-        ).trim()
-
-        def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
-        if (!clusterArns || clusterArns.isEmpty()) {
-            error "❌ No ECS clusters found in region ${awsRegion}"
-        }
-
-        def selectedClusterArn = clusterArns[0]
-        def clusterName = selectedClusterArn.tokenize('/').last()
-        echo "✅ Using ECS cluster: ${clusterName}"
-
-        // Verify cluster exists before proceeding
-        def clusterExists = sh(
-            script: """
-                aws ecs describe-clusters --clusters ${clusterName} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
-            """,
-            returnStdout: true
-        ).trim()
+        // Step 1: Dynamically discover ECS cluster with multiple approaches
+        def clusterName
+        def clusterExists = "MISSING"
         
-        if (clusterExists == "MISSING") {
-            error "❌ ECS cluster '${clusterName}' not found. Cannot proceed with deployment."
+        echo "🔍 Attempting to find ECS cluster using multiple methods..."
+        
+        // Method 1: Try listing clusters without region first
+        try {
+            def clustersJson = sh(
+                script: "aws ecs list-clusters --output json",
+                returnStdout: true
+            ).trim()
+            
+            def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
+            if (clusterArns && !clusterArns.isEmpty()) {
+                def selectedClusterArn = clusterArns[0]
+                clusterName = selectedClusterArn.tokenize('/').last()
+                
+                // Verify this cluster exists
+                clusterExists = sh(
+                    script: """
+                        aws ecs describe-clusters --clusters ${clusterName} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+                    """,
+                    returnStdout: true
+                ).trim()
+                
+                if (clusterExists != "MISSING") {
+                    echo "✅ Found ECS cluster using default region: ${clusterName}"
+                }
+            }
+        } catch (Exception e) {
+            echo "⚠️ Error listing clusters with default region: ${e.message}"
         }
+        
+        // Method 2: Try with explicit region if first method failed
+        if (clusterExists == "MISSING") {
+            try {
+                echo "🔍 Trying to find cluster with explicit region ${awsRegion}..."
+                def clustersJson = sh(
+                    script: "aws ecs list-clusters --region ${awsRegion} --output json",
+                    returnStdout: true
+                ).trim()
+                
+                def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
+                if (clusterArns && !clusterArns.isEmpty()) {
+                    def selectedClusterArn = clusterArns[0]
+                    clusterName = selectedClusterArn.tokenize('/').last()
+                    
+                    // Verify this cluster exists
+                    clusterExists = sh(
+                        script: """
+                            aws ecs describe-clusters --clusters ${clusterName} --region ${awsRegion} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (clusterExists != "MISSING") {
+                        echo "✅ Found ECS cluster using region ${awsRegion}: ${clusterName}"
+                    }
+                }
+            } catch (Exception e) {
+                echo "⚠️ Error listing clusters with region ${awsRegion}: ${e.message}"
+            }
+        }
+        
+        // Method 3: Try with us-east-1 specifically if we still haven't found it
+        if (clusterExists == "MISSING") {
+            try {
+                echo "🔍 Trying to find cluster in us-east-1 region specifically..."
+                def clustersJson = sh(
+                    script: "aws ecs list-clusters --region us-east-1 --output json",
+                    returnStdout: true
+                ).trim()
+                
+                def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
+                if (clusterArns && !clusterArns.isEmpty()) {
+                    def selectedClusterArn = clusterArns[0]
+                    clusterName = selectedClusterArn.tokenize('/').last()
+                    
+                    // Verify this cluster exists
+                    clusterExists = sh(
+                        script: """
+                            aws ecs describe-clusters --clusters ${clusterName} --region us-east-1 --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (clusterExists != "MISSING") {
+                        echo "✅ Found ECS cluster in us-east-1: ${clusterName}"
+                        // Update the region to match where we found the cluster
+                        awsRegion = "us-east-1"
+                    }
+                }
+            } catch (Exception e) {
+                echo "⚠️ Error listing clusters in us-east-1: ${e.message}"
+            }
+        }
+        
+        // If we still haven't found a cluster, error out
+        if (clusterExists == "MISSING" || !clusterName) {
+            error "❌ No ECS clusters found in any region. Cannot proceed with deployment."
+        }
+        
+        echo "✅ Using ECS cluster: ${clusterName} in region ${awsRegion}"
 
         // Step 2: Dynamically discover ECS services
         def servicesJson = sh(
