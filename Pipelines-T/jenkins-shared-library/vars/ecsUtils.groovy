@@ -283,21 +283,23 @@ def fetchResources(Map config) {
         
         // Check if app-specific services exist, fall back to default if not
         try {
-            // Get service names directly to avoid JSON parsing issues
-            def serviceNames = sh(
+            // Use simple text output to avoid JSON parsing issues
+            def blueServiceExists = sh(
                 script: """
-                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --output text | tr '\\t' '\\n' | grep -o '[^/]*\$'
+                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "length(serviceArns[?contains(@,'app${appSuffix}-blue-service')])" --output text
                 """,
                 returnStdout: true
-            ).trim().split("\\s+")
+            ).trim()
             
-            def blueServiceName = "app${appSuffix}-blue-service"
-            def greenServiceName = "app${appSuffix}-green-service"
+            def greenServiceExists = sh(
+                script: """
+                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --query "length(serviceArns[?contains(@,'app${appSuffix}-green-service')])" --output text
+                """,
+                returnStdout: true
+            ).trim()
             
-            def blueServiceExists = serviceNames.find { it == blueServiceName }
-            def greenServiceExists = serviceNames.find { it == greenServiceName }
-            
-            if (!blueServiceExists || !greenServiceExists) {
+            // Check if the count is greater than 0
+            if (blueServiceExists == "0" || greenServiceExists == "0") {
                 result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
                 result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
                 echo "⚠️ App-specific services not found, falling back to default service names"
@@ -325,6 +327,7 @@ def fetchResources(Map config) {
         error "❌ Failed to fetch ECS resources: ${e.message}"
     }
 }
+
 
 @NonCPS
 def parseJsonString(String json) {
@@ -452,7 +455,7 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
-        def clusterArns = parseJsonWithErrorHandling(clustersJson)?.clusterArns
+        def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
         if (!clusterArns || clusterArns.isEmpty()) {
             error "❌ No ECS clusters found in region ${env.AWS_REGION}"
         }
@@ -468,7 +471,7 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
-        def serviceArns = parseJsonWithErrorHandling(servicesJson)?.serviceArns
+        def serviceArns = parseJsonSafe(servicesJson)?.serviceArns
         if (!serviceArns || serviceArns.isEmpty()) {
             error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
         }
