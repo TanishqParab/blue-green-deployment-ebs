@@ -433,17 +433,6 @@ def updateApplication(Map config) {
     echo "Running ECS update application logic..."
 
     try {
-        // Validate required environment variables
-        if (!env.AWS_REGION) {
-            error "❌ AWS_REGION environment variable is not set"
-        }
-        if (!env.ECR_REPO_NAME) {
-            error "❌ ECR_REPO_NAME environment variable is not set"
-        }
-        if (!env.WORKSPACE) {
-            error "❌ WORKSPACE environment variable is not set"
-        }
-
         // Debug statements to check input parameters
         echo "DEBUG: Received config: ${config}"
         echo "DEBUG: appName from config: ${config.appName}"
@@ -459,23 +448,23 @@ def updateApplication(Map config) {
         
         // Step 1: Dynamically discover ECS cluster
         def clustersJson = sh(
-            script: "aws ecs list-clusters --region ${env.AWS_REGION} --output json",
+            script: "aws ecs list-clusters --output json",
             returnStdout: true
         ).trim()
 
         def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
         if (!clusterArns || clusterArns.isEmpty()) {
-            error "❌ No ECS clusters found in region ${env.AWS_REGION}"
+            error "❌ No ECS clusters found"
         }
 
         def selectedClusterArn = clusterArns[0]
         def selectedClusterName = selectedClusterArn.tokenize('/').last()
-        env.ECS_CLUSTER = selectedClusterName ?: error "Failed to extract cluster name from ARN"
+        env.ECS_CLUSTER = selectedClusterName
         echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
 
         // Step 2: Dynamically discover ECS services
         def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --region ${env.AWS_REGION} --output json",
+            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output json",
             returnStdout: true
         ).trim()
 
@@ -494,11 +483,9 @@ def updateApplication(Map config) {
         // Fall back to default services if app-specific ones don't exist
         if (!blueService) {
             blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
-            echo "⚠️ Using default blue service name: ${blueService}"
         }
         if (!greenService) {
             greenService = serviceNames.find { it.toLowerCase() == "green-service" }
-            echo "⚠️ Using default green service name: ${greenService}"
         }
 
         if (!blueService || !greenService) {
@@ -512,7 +499,7 @@ def updateApplication(Map config) {
         def getImageTagForService = { serviceName ->
             try {
                 def taskDefArn = sh(
-                    script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
+                    script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --query 'services[0].taskDefinition' --output text || echo ''",
                     returnStdout: true
                 )?.trim()
                 
@@ -521,7 +508,7 @@ def updateApplication(Map config) {
                 }
                 
                 def taskDefJsonText = sh(
-                    script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
+                    script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --query 'taskDefinition' --output json || echo '{}'",
                     returnStdout: true
                 )?.trim()
                 
@@ -547,9 +534,9 @@ def updateApplication(Map config) {
 
         // Determine active environment based on app_*-latest tags
         def appLatestTag = "${appName}-latest"
-        if (blueImageTag?.contains(appLatestTag) && !greenImageTag?.contains(appLatestTag)) {
+        if (blueImageTag.contains(appLatestTag) && !greenImageTag.contains(appLatestTag)) {
             env.ACTIVE_ENV = "BLUE"
-        } else if (greenImageTag?.contains(appLatestTag) && !blueImageTag?.contains(appLatestTag)) {
+        } else if (greenImageTag.contains(appLatestTag) && !blueImageTag.contains(appLatestTag)) {
             env.ACTIVE_ENV = "GREEN"
         } else {
             echo "⚠️ Could not determine ACTIVE_ENV from image tags clearly. Defaulting ACTIVE_ENV to BLUE"
@@ -568,10 +555,35 @@ def updateApplication(Map config) {
         env.IDLE_SERVICE = (env.IDLE_ENV == "BLUE") ? blueService : greenService
         echo "Selected IDLE_SERVICE: ${env.IDLE_SERVICE}"
 
-        // Step 4: Tag current image for rollback
+        // Step 3: Get AWS region if not set
+        if (!env.AWS_REGION) {
+            env.AWS_REGION = sh(
+                script: "aws configure get region || echo 'us-east-1'",
+                returnStdout: true
+            ).trim()
+            echo "Using AWS region: ${env.AWS_REGION}"
+        }
+
+        // Step 4: Get ECR repository name if not set
+        if (!env.ECR_REPO_NAME) {
+            def reposJson = sh(
+                script: "aws ecr describe-repositories --output json",
+                returnStdout: true
+            ).trim()
+            
+            def repos = parseJsonSafe(reposJson)?.repositories
+            if (repos && !repos.isEmpty()) {
+                env.ECR_REPO_NAME = repos[0].repositoryName
+                echo "Using ECR repository: ${env.ECR_REPO_NAME}"
+            } else {
+                error "❌ No ECR repositories found"
+            }
+        }
+
+        // Step 5: Tag current image for rollback
         def currentImageInfo = sh(
             script: """
-            aws ecr describe-images --repository-name ${env.ECR_REPO_NAME} --image-ids imageTag=${appName}-latest --region ${env.AWS_REGION} --query 'imageDetails[0].{digest:imageDigest,pushedAt:imagePushedAt}' --output json 2>/dev/null || echo '{}'
+            aws ecr describe-images --repository-name ${env.ECR_REPO_NAME} --image-ids imageTag=${appName}-latest --query 'imageDetails[0].{digest:imageDigest,pushedAt:imagePushedAt}' --output json 2>/dev/null || echo '{}'
             """,
             returnStdout: true
         ).trim()
@@ -586,8 +598,8 @@ def updateApplication(Map config) {
             echo "Tagging current '${appName}-latest' image as '${rollbackTag}'..."
 
             sh """
-            aws ecr batch-get-image --repository-name ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --image-ids imageDigest=${imageDigest} --query 'images[0].imageManifest' --output text > image-manifest-${appName}.json
-            aws ecr put-image --repository-name ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --image-tag ${rollbackTag} --image-manifest file://image-manifest-${appName}.json
+            aws ecr batch-get-image --repository-name ${env.ECR_REPO_NAME} --image-ids imageDigest=${imageDigest} --query 'images[0].imageManifest' --output text > image-manifest-${appName}.json
+            aws ecr put-image --repository-name ${env.ECR_REPO_NAME} --image-tag ${rollbackTag} --image-manifest file://image-manifest-${appName}.json
             """
 
             echo "✅ Tagged rollback image: ${rollbackTag}"
@@ -595,114 +607,51 @@ def updateApplication(Map config) {
             echo "⚠️ No current '${appName}-latest' image found to tag"
         }
 
-        // Step 5: Build and push Docker image for this app
-        def ecrUri
-        try {
-            ecrUri = sh(
-                script: "aws ecr describe-repositories --repository-names ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --query 'repositories[0].repositoryUri' --output text",
-                returnStdout: true
-            )?.trim()
-            
-            if (!ecrUri) {
-                error "❌ Failed to get ECR repository URI"
-            }
-        } catch (Exception e) {
-            error "❌ Error getting ECR repository URI: ${e.message}"
-        }
+        // Step 6: Build and push Docker image for this app
+        def ecrUri = sh(
+            script: "aws ecr describe-repositories --repository-names ${env.ECR_REPO_NAME} --query 'repositories[0].repositoryUri' --output text",
+            returnStdout: true
+        ).trim()
 
         // Use explicit imageTag variable to ensure consistency
         def imageTag = "${appName}-latest"
         
-        try {
-            sh """
-                aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
-                cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
-                docker build -t ${env.ECR_REPO_NAME}:${imageTag} --build-arg APP_NAME=${appSuffix} .
-                docker tag ${env.ECR_REPO_NAME}:${imageTag} ${ecrUri}:${imageTag}
-                docker push ${ecrUri}:${imageTag}
-            """
-        } catch (Exception e) {
-            error "❌ Docker build/push failed: ${e.message}"
-        }
+        sh """
+            aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
+            cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
+            docker build -t ${env.ECR_REPO_NAME}:${imageTag} --build-arg APP_NAME=${appSuffix} .
+            docker tag ${env.ECR_REPO_NAME}:${imageTag} ${ecrUri}:${imageTag}
+            docker push ${ecrUri}:${imageTag}
+        """
 
         env.IMAGE_URI = "${ecrUri}:${imageTag}"
         echo "✅ Image pushed: ${env.IMAGE_URI}"
 
-        // Step 6: Update ECS Service
+        // Step 7: Update ECS Service
         echo "Updating ${env.IDLE_ENV} service (${env.IDLE_SERVICE})..."
 
-        // Try to get task definition ARN with fallback to active service
-        def taskDefArn
-        try {
-            taskDefArn = sh(
-                script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
-                returnStdout: true
-            )?.trim()
-            
-            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
-                throw new Exception("No task definition found")
-            }
-        } catch (Exception e) {
-            echo "⚠️ No valid task definition found for ${env.IDLE_SERVICE}, using active service task definition"
-            def activeService = (env.ACTIVE_ENV == "BLUE") ? blueService : greenService
-            taskDefArn = sh(
-                script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${activeService} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
-                returnStdout: true
-            )?.trim()
-            
-            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
-                // Use a specific task definition family based on environment and app
-                def taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
-                echo "⚠️ Using specific task definition family: ${taskDefFamily}"
-                
-                // Skip the ARN lookup and directly get the task definition JSON
-                taskDefArn = taskDefFamily
-            }
+        // Get task definition family based on service name
+        def taskDefFamily
+        if (env.IDLE_SERVICE.contains("app${appSuffix}")) {
+            // App-specific task definition
+            taskDefFamily = env.IDLE_ENV.toLowerCase() == "blue" ? 
+                "app${appSuffix}-task" : "app${appSuffix}-task-green"
+        } else {
+            // Default task definition
+            taskDefFamily = env.IDLE_ENV.toLowerCase() == "blue" ? 
+                "task" : "task-green"
         }
-
-        // Get the task definition JSON directly
-        def taskDefJsonText
-        try {
-            // Always use the task definition family name directly
-            def taskDefFamily
-            if (taskDefArn.startsWith("arn:")) {
-                // Extract family name from ARN if needed
-                def parts = taskDefArn.split("/")
-                if (parts.size() > 1) {
-                    taskDefFamily = parts[1].split(":")[0]
-                } else {
-                    taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
-                }
-            } else {
-                taskDefFamily = taskDefArn
-            }
-            
-            echo "Using task definition family: ${taskDefFamily}"
-            
-            taskDefJsonText = sh(
-                script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
-                returnStdout: true
-            )?.trim()
-            
-            // Test if it's valid JSON
-            def testJson = parseJsonSafe(taskDefJsonText)
-            if (!testJson || testJson.isEmpty()) {
-                throw new Exception("Invalid JSON")
-            }
-        } catch (Exception e) {
-            echo "⚠️ Error getting task definition JSON: ${e.message}, trying fallback"
-            // Direct fallback to known task definition family
-            def taskDefFamily = env.IDLE_ENV == "BLUE" ? "app${appSuffix}-task" : "app${appSuffix}-task-green"
-            echo "⚠️ Fallback to task definition family: ${taskDefFamily}"
-            
-            taskDefJsonText = sh(
-                script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
-                returnStdout: true
-            )?.trim()
-        }
-
-        if (!taskDefJsonText || taskDefJsonText == "null" || taskDefJsonText == "{}") {
-            error "❌ Failed to get task definition JSON for ARN ${taskDefArn}"
+        
+        echo "Using task definition family: ${taskDefFamily}"
+        
+        // Get current task definition
+        def taskDefJsonText = sh(
+            script: "aws ecs describe-task-definition --task-definition ${taskDefFamily} --query 'taskDefinition' --output json || echo '{}'",
+            returnStdout: true
+        ).trim()
+        
+        if (!taskDefJsonText || taskDefJsonText == "{}" || taskDefJsonText == "null") {
+            error "❌ Failed to get task definition for family ${taskDefFamily}"
         }
 
         // Update task definition with new image
@@ -710,28 +659,29 @@ def updateApplication(Map config) {
         writeFile file: "new-task-def-${appSuffix}.json", text: newTaskDefJson
 
         def newTaskDefArn = sh(
-            script: "aws ecs register-task-definition --cli-input-json file://new-task-def-${appSuffix}.json --region ${env.AWS_REGION} --query 'taskDefinition.taskDefinitionArn' --output text || echo ''",
+            script: "aws ecs register-task-definition --cli-input-json file://new-task-def-${appSuffix}.json --query 'taskDefinition.taskDefinitionArn' --output text",
             returnStdout: true
-        )?.trim()
+        ).trim()
 
         if (!newTaskDefArn || newTaskDefArn == "null") {
             error "❌ Failed to register new task definition"
         }
 
+        // Update service with new task definition
         sh """
         aws ecs update-service \\
             --cluster ${env.ECS_CLUSTER} \\
             --service ${env.IDLE_SERVICE} \\
             --task-definition ${newTaskDefArn} \\
             --desired-count 1 \\
-            --force-new-deployment \\
-            --region ${env.AWS_REGION}
+            --force-new-deployment
         """
 
         echo "✅ Updated service ${env.IDLE_ENV} with task def: ${newTaskDefArn}"
 
+        // Wait for service to stabilize
         echo "Waiting for ${env.IDLE_ENV} service to stabilize..."
-        sh "aws ecs wait services-stable --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION}"
+        sh "aws ecs wait services-stable --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE}"
         echo "✅ Service ${env.IDLE_ENV} is stable"
 
     } catch (Exception e) {
@@ -792,8 +742,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         }
         
         def taskDef = new JsonSlurper().parseText(jsonText)
-        
-        // Remove fields that shouldn't be in the new task definition
         ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
          'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
             taskDef.remove(field)
