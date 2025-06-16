@@ -512,7 +512,7 @@ def updateApplication(Map config) {
                     returnStdout: true
                 )?.trim()
                 
-                def taskDefJson = parseJsonWithErrorHandling(taskDefJsonText)
+                def taskDefJson = parseJsonSafe(taskDefJsonText)
                 if (!taskDefJson || !taskDefJson.containerDefinitions || taskDefJson.containerDefinitions.isEmpty()) {
                     return ""
                 }
