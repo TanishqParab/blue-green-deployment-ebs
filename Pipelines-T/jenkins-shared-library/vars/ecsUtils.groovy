@@ -452,7 +452,7 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
-        def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
+        def clusterArns = parseJsonWithErrorHandling(clustersJson)?.clusterArns
         if (!clusterArns || clusterArns.isEmpty()) {
             error "❌ No ECS clusters found in region ${env.AWS_REGION}"
         }
@@ -468,7 +468,7 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
-        def serviceArns = parseJsonSafe(servicesJson)?.serviceArns
+        def serviceArns = parseJsonWithErrorHandling(servicesJson)?.serviceArns
         if (!serviceArns || serviceArns.isEmpty()) {
             error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
         }
