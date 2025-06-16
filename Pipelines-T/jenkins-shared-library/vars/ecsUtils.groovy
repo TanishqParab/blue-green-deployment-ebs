@@ -486,36 +486,37 @@ def updateApplication(Map config) {
             }
         }
 
-        // Step 2: Dynamically discover ECS services
-        def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --region ${env.AWS_REGION} --output json",
-            returnStdout: true
-        ).trim()
+        // Step 2: Dynamically discover ECS services or use default service names
+        def serviceArns = []
+        try {
+            def servicesJson = sh(
+                script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --region ${env.AWS_REGION} --output json",
+                returnStdout: true
+            ).trim()
 
-        def serviceArns = parseJsonSafe(servicesJson)?.serviceArns
-        if (!serviceArns || serviceArns.isEmpty()) {
-            error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
-        }
-
-        def serviceNames = serviceArns.collect { it.tokenize('/').last() }
-        echo "Discovered ECS services: ${serviceNames}"
-
-        // Look for app-specific services first with the correct naming pattern
-        def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
-        def greenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
-        
-        // Fall back to default services if app-specific ones don't exist
-        if (!blueService) {
-            blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
-        }
-        if (!greenService) {
-            greenService = serviceNames.find { it.toLowerCase() == "green-service" }
-        }
-
-        if (!blueService || !greenService) {
-            error "❌ Could not find both 'blue' and 'green' ECS services in cluster ${env.ECS_CLUSTER}. Found services: ${serviceNames}"
+            serviceArns = parseJsonSafe(servicesJson)?.serviceArns ?: []
+        } catch (Exception e) {
+            echo "⚠️ Error listing services: ${e.message}. Will use default service names."
         }
         
+        // If no services found, we'll use default service names
+        def blueService = "blue-service"
+        def greenService = "green-service"
+        
+        if (!serviceArns.isEmpty()) {
+            def serviceNames = serviceArns.collect { it.tokenize('/').last() }
+            echo "Discovered ECS services: ${serviceNames}"
+
+            // Look for app-specific services first with the correct naming pattern
+            def appSpecificBlue = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
+            def appSpecificGreen = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
+            
+            if (appSpecificBlue) blueService = appSpecificBlue
+            if (appSpecificGreen) greenService = appSpecificGreen
+        } else {
+            echo "⚠️ No services found in cluster ${env.ECS_CLUSTER}. Using default service names."
+        }
+
         echo "Using blue service: ${blueService}"
         echo "Using green service: ${greenService}"
 
