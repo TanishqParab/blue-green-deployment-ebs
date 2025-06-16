@@ -624,6 +624,7 @@ def updateApplication(Map config) {
             docker push ${ecrUri}:${imageTag}
         """
 
+        // Store the clean ECR URI without duplicating the domain
         env.IMAGE_URI = "${ecrUri}:${imageTag}"
         echo "✅ Image pushed: ${env.IMAGE_URI}"
 
@@ -794,6 +795,17 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
          'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
             taskDef.remove(field)
+        }
+        
+        // Fix for duplicate domain in image URI
+        if (imageUri.contains(".dkr.ecr.") && imageUri.count(".dkr.ecr.") > 1) {
+            // Extract the correct URI format: accountId.dkr.ecr.region.amazonaws.com/repo:tag
+            def parts = imageUri.split("\\.dkr\\.ecr\\.")
+            if (parts.length >= 2) {
+                def accountId = parts[0]
+                def remainder = parts[1]
+                imageUri = "${accountId}.dkr.ecr.${remainder}"
+            }
         }
         
         // Use the provided image URI directly (already app-specific)
