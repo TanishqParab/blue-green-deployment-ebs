@@ -12,15 +12,41 @@ def waitForServices(Map config) {
     echo "Waiting for ECS services to stabilize for app${appSuffix}..."
     sleep(60)  // Give time for services to start
     
-    // Get the cluster name
-    def cluster = sh(
-        script: "terraform -chdir=${config.tfWorkingDir} output -raw ecs_cluster_id",
+    // Get the cluster name with error handling
+    def cluster
+    try {
+        cluster = sh(
+            script: "terraform -chdir=${config.tfWorkingDir} output -raw ecs_cluster_id",
+            returnStdout: true
+        ).trim()
+        
+        if (!cluster) {
+            echo "⚠️ Warning: Empty cluster ID returned from Terraform. Using default cluster."
+            cluster = "default"
+        }
+    } catch (Exception e) {
+        echo "⚠️ Warning: Could not get cluster ID from Terraform: ${e.message}. Using default cluster."
+        cluster = "default"
+    }
+    
+    // Verify cluster exists before proceeding
+    def clusterExists = sh(
+        script: """
+            aws ecs describe-clusters --clusters ${cluster} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+        """,
         returnStdout: true
     ).trim()
+    
+    if (clusterExists == "MISSING") {
+        echo "⚠️ Warning: Cluster '${cluster}' not found. Services cannot be checked."
+        return
+    }
     
     // Check for app-specific service names first
     def blueServiceName = "app${appSuffix}-blue-service"
     def greenServiceName = "app${appSuffix}-green-service"
+    def defaultBlueServiceName = "blue-service"
+    def defaultGreenServiceName = "green-service"
     
     // Try to find app-specific services
     def blueServiceExists = sh(
@@ -37,6 +63,26 @@ def waitForServices(Map config) {
         returnStdout: true
     ).trim()
     
+    // Check default services if app-specific ones aren't found
+    def defaultBlueExists = "MISSING"
+    def defaultGreenExists = "MISSING"
+    
+    if (blueServiceExists == "MISSING" && greenServiceExists == "MISSING") {
+        defaultBlueExists = sh(
+            script: """
+                aws ecs describe-services --cluster ${cluster} --services ${defaultBlueServiceName} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+            """,
+            returnStdout: true
+        ).trim()
+        
+        defaultGreenExists = sh(
+            script: """
+                aws ecs describe-services --cluster ${cluster} --services ${defaultGreenServiceName} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+            """,
+            returnStdout: true
+        ).trim()
+    }
+    
     // Determine which service to check
     def serviceName
     if (blueServiceExists != "MISSING" && blueServiceExists != "INACTIVE") {
@@ -45,22 +91,44 @@ def waitForServices(Map config) {
     } else if (greenServiceExists != "MISSING" && greenServiceExists != "INACTIVE") {
         serviceName = greenServiceName
         echo "Using app-specific green service: ${serviceName}"
+    } else if (defaultBlueExists != "MISSING" && defaultBlueExists != "INACTIVE") {
+        serviceName = defaultBlueServiceName
+        echo "Using default blue service: ${serviceName}"
+    } else if (defaultGreenExists != "MISSING" && defaultGreenExists != "INACTIVE") {
+        serviceName = defaultGreenServiceName
+        echo "Using default green service: ${serviceName}"
     } else {
-        // Fall back to default service names
-        serviceName = "blue-service"
-        echo "App-specific services not found, using default service: ${serviceName}"
+        echo "⚠️ Warning: No active services found for app${appSuffix}. Skipping service status check."
+        // Continue with health check if ALB exists
     }
     
-    // Check service status
-    sh """
-    aws ecs describe-services --cluster ${cluster} --services ${serviceName} --query 'services[0].{Status:status,DesiredCount:desiredCount,RunningCount:runningCount}' --output table
-    """
+    // Check service status if a service was found
+    if (serviceName) {
+        try {
+            sh """
+            aws ecs describe-services --cluster ${cluster} --services ${serviceName} --query 'services[0].{Status:status,DesiredCount:desiredCount,RunningCount:runningCount}' --output table
+            """
+        } catch (Exception e) {
+            echo "⚠️ Warning: Could not check service status: ${e.message}"
+        }
+    }
     
-    // Get the ALB DNS name
-    def albDns = sh(
-        script: "terraform -chdir=${config.tfWorkingDir} output -raw alb_dns_name",
-        returnStdout: true
-    ).trim()
+    // Get the ALB DNS name with error handling
+    def albDns
+    try {
+        albDns = sh(
+            script: "terraform -chdir=${config.tfWorkingDir} output -raw alb_dns_name",
+            returnStdout: true
+        ).trim()
+        
+        if (!albDns) {
+            echo "⚠️ Warning: Could not get ALB DNS name from Terraform. Skipping health check."
+            return
+        }
+    } catch (Exception e) {
+        echo "⚠️ Warning: Could not get ALB DNS name: ${e.message}. Skipping health check."
+        return
+    }
     
     // Determine health endpoint based on app
     def healthEndpoint = appSuffix == "1" ? "/health" : "/app${appSuffix}/health"
@@ -573,176 +641,212 @@ import groovy.json.JsonOutput
 
 def updateApplication(Map config) {
     try {
-        // Use the app detected in detectChanges or from config
-        if (!env.CHANGED_APP && !config.APP_NAME) {
-            error "❌ No application specified. Run detectChanges first or provide APP_NAME in config."
+        // Get app name from config, don't rely on env variables
+        def appName = config.APP_NAME ?: config.appName
+        if (!appName) {
+            error "❌ No application specified. Provide APP_NAME in config."
         }
         
-        def appName = env.CHANGED_APP ?: config.APP_NAME
         def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
         
         echo "🚀 Running ECS update for application: ${appName}"
         
-        // Ensure AWS region is set
-        if (!env.AWS_REGION) {
-            env.AWS_REGION = sh(
-                script: "aws configure get region || echo 'us-east-1'",
+        // Get AWS region dynamically
+        def awsRegion = sh(
+            script: "aws configure get region || echo 'us-east-1'",
+            returnStdout: true
+        ).trim()
+        
+        // Discover ECR repository
+        def ecrRepoName = config.ecrRepoName
+        if (!ecrRepoName) {
+            def reposJson = sh(
+                script: "aws ecr describe-repositories --region ${awsRegion} --output json",
                 returnStdout: true
             ).trim()
-            echo "Using AWS region from AWS CLI config: ${env.AWS_REGION}"
-        }
-        
-        // Ensure ECR repository name is set
-        if (!env.ECR_REPO_NAME) {
-            if (config.ecrRepoName) {
-                env.ECR_REPO_NAME = config.ecrRepoName
-                echo "Using ECR repository from config: ${env.ECR_REPO_NAME}"
+            
+            def repos = parseJsonSafe(reposJson)?.repositories
+            if (repos && !repos.isEmpty()) {
+                ecrRepoName = repos[0].repositoryName
+                echo "Using discovered ECR repository: ${ecrRepoName}"
             } else {
-                // Try to discover ECR repository
-                def reposJson = sh(
-                    script: "aws ecr describe-repositories --region ${env.AWS_REGION} --output json",
-                    returnStdout: true
-                ).trim()
-                
-                def repos = parseJsonSafe(reposJson)?.repositories
-                if (repos && !repos.isEmpty()) {
-                    env.ECR_REPO_NAME = repos[0].repositoryName
-                    echo "Using discovered ECR repository: ${env.ECR_REPO_NAME}"
-                } else {
-                    error "❌ No ECR repositories found. Please specify ecrRepoName in config."
-                }
+                error "❌ No ECR repositories found. Please specify ecrRepoName in config."
             }
         }
         
         // Step 1: Dynamically discover ECS cluster
         def clustersJson = sh(
-            script: "aws ecs list-clusters --region ${env.AWS_REGION} --output json",
+            script: "aws ecs list-clusters --region ${awsRegion} --output json",
             returnStdout: true
         ).trim()
 
         def clusterArns = parseJsonSafe(clustersJson)?.clusterArns
         if (!clusterArns || clusterArns.isEmpty()) {
-            error "❌ No ECS clusters found in region ${env.AWS_REGION}"
+            error "❌ No ECS clusters found in region ${awsRegion}"
         }
 
         def selectedClusterArn = clusterArns[0]
-        def selectedClusterName = selectedClusterArn.tokenize('/').last()
-        env.ECS_CLUSTER = selectedClusterName
-        echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
+        def clusterName = selectedClusterArn.tokenize('/').last()
+        echo "✅ Using ECS cluster: ${clusterName}"
+
+        // Verify cluster exists before proceeding
+        def clusterExists = sh(
+            script: """
+                aws ecs describe-clusters --clusters ${clusterName} --query 'clusters[0].status' --output text 2>/dev/null || echo "MISSING"
+            """,
+            returnStdout: true
+        ).trim()
+        
+        if (clusterExists == "MISSING") {
+            error "❌ ECS cluster '${clusterName}' not found. Cannot proceed with deployment."
+        }
 
         // Step 2: Dynamically discover ECS services
         def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --region ${env.AWS_REGION} --output json",
+            script: "aws ecs list-services --cluster ${clusterName} --region ${awsRegion} --output json",
             returnStdout: true
         ).trim()
 
         def serviceArns = parseJsonSafe(servicesJson)?.serviceArns
+        
+        // Define service names
+        def blueServiceName
+        def greenServiceName
+        def activeEnv
+        def idleEnv
+        def activeService
+        def idleService
+        
         if (!serviceArns || serviceArns.isEmpty()) {
-            error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
-        }
-
-        def serviceNames = serviceArns.collect { it.tokenize('/').last() }
-        
-        // Look for app-specific services with the correct naming pattern
-        def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
-        def greenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
-        
-        // Fall back to default services if app-specific ones don't exist
-        if (!blueService) {
-            blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
-            echo "Using default blue service: ${blueService}"
+            echo "⚠️ No ECS services found in cluster ${clusterName}. Will create new services."
+            blueServiceName = "app${appSuffix}-blue-service"
+            greenServiceName = "app${appSuffix}-green-service"
+            activeEnv = "BLUE"
+            idleEnv = "GREEN"
         } else {
-            echo "Using app-specific blue service: ${blueService}"
-        }
-        
-        if (!greenService) {
-            greenService = serviceNames.find { it.toLowerCase() == "green-service" }
-            echo "Using default green service: ${greenService}"
-        } else {
-            echo "Using app-specific green service: ${greenService}"
-        }
-
-        if (!blueService || !greenService) {
-            error "❌ Could not find both 'blue' and 'green' ECS services for app${appSuffix} in cluster ${env.ECS_CLUSTER}"
-        }
-
-        // Helper to get image tag for a service
-        def getImageTagForService = { serviceName ->
-            try {
-                def taskDefArn = sh(
-                    script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${serviceName} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text || echo ''",
-                    returnStdout: true
-                ).trim()
-                
-                if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
-                    echo "⚠️ No task definition found for service ${serviceName}"
-                    return ""
-                }
-                
-                def taskDefJsonText = sh(
-                    script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json || echo '{}'",
-                    returnStdout: true
-                ).trim()
-                
-                def taskDefJson = parseJsonSafe(taskDefJsonText)
-                if (!taskDefJson || !taskDefJson.containerDefinitions || taskDefJson.containerDefinitions.isEmpty()) {
-                    echo "⚠️ No container definitions found in task definition for service ${serviceName}"
-                    return ""
-                }
-                
-                def image = taskDefJson.containerDefinitions[0].image
-                def imageTag = image?.tokenize(':')?.last() ?: ""
-                return imageTag
-            } catch (Exception e) {
-                echo "⚠️ Error getting image tag for service ${serviceName}: ${e.message}"
-                return ""
+            def serviceNames = serviceArns.collect { it.tokenize('/').last() }
+            
+            // Look for app-specific services with the correct naming pattern
+            def appBlueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
+            def appGreenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
+            def defaultBlueService = serviceNames.find { it.toLowerCase() == "blue-service" }
+            def defaultGreenService = serviceNames.find { it.toLowerCase() == "green-service" }
+            
+            // Determine which services to use
+            if (appBlueService) {
+                blueServiceName = appBlueService
+                echo "Using app-specific blue service: ${blueServiceName}"
+            } else if (defaultBlueService) {
+                blueServiceName = defaultBlueService
+                echo "Using default blue service: ${blueServiceName}"
+            } else {
+                blueServiceName = "app${appSuffix}-blue-service"
+                echo "⚠️ Blue service not found. Will use name: ${blueServiceName}"
             }
+            
+            if (appGreenService) {
+                greenServiceName = appGreenService
+                echo "Using app-specific green service: ${greenServiceName}"
+            } else if (defaultGreenService) {
+                greenServiceName = defaultGreenService
+                echo "Using default green service: ${greenServiceName}"
+            } else {
+                greenServiceName = "app${appSuffix}-green-service"
+                echo "⚠️ Green service not found. Will use name: ${greenServiceName}"
+            }
+
+            // Helper to get image tag for a service
+            def getImageTagForService = { serviceName ->
+                try {
+                    // Check if service exists first
+                    def serviceExists = sh(
+                        script: """
+                            aws ecs describe-services --cluster ${clusterName} --services ${serviceName} --region ${awsRegion} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (serviceExists == "MISSING" || serviceExists == "INACTIVE") {
+                        echo "⚠️ Service ${serviceName} does not exist or is inactive"
+                        return ""
+                    }
+                    
+                    def taskDefArn = sh(
+                        script: "aws ecs describe-services --cluster ${clusterName} --services ${serviceName} --region ${awsRegion} --query 'services[0].taskDefinition' --output text || echo ''",
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
+                        echo "⚠️ No task definition found for service ${serviceName}"
+                        return ""
+                    }
+                    
+                    def taskDefJsonText = sh(
+                        script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${awsRegion} --query 'taskDefinition' --output json || echo '{}'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    def taskDefJson = parseJsonSafe(taskDefJsonText)
+                    if (!taskDefJson || !taskDefJson.containerDefinitions || taskDefJson.containerDefinitions.isEmpty()) {
+                        echo "⚠️ No container definitions found in task definition for service ${serviceName}"
+                        return ""
+                    }
+                    
+                    def image = taskDefJson.containerDefinitions[0].image
+                    def imageTag = image?.tokenize(':')?.last() ?: ""
+                    return imageTag
+                } catch (Exception e) {
+                    echo "⚠️ Error getting image tag for service ${serviceName}: ${e.message}"
+                    return ""
+                }
+            }
+
+            def blueImageTag = getImageTagForService(blueServiceName)
+            def greenImageTag = getImageTagForService(greenServiceName)
+
+            echo "Blue service image tag: ${blueImageTag}"
+            echo "Green service image tag: ${greenImageTag}"
+
+            // Determine active environment based on app-specific latest tags
+            def appLatestTag = "${appName}-latest"
+            if (blueImageTag.contains(appLatestTag) && !greenImageTag.contains(appLatestTag)) {
+                activeEnv = "BLUE"
+            } else if (greenImageTag.contains(appLatestTag) && !blueImageTag.contains(appLatestTag)) {
+                activeEnv = "GREEN"
+            } else {
+                echo "⚠️ Could not determine active environment from image tags for app${appSuffix}. Defaulting to BLUE"
+                activeEnv = "BLUE"
+            }
+
+            idleEnv = (activeEnv == "BLUE") ? "GREEN" : "BLUE"
+            echo "✅ For app${appSuffix}: ACTIVE_ENV=${activeEnv}, IDLE_ENV=${idleEnv}"
         }
-
-        def blueImageTag = getImageTagForService(blueService)
-        def greenImageTag = getImageTagForService(greenService)
-
-        echo "Blue service image tag: ${blueImageTag}"
-        echo "Green service image tag: ${greenImageTag}"
-
-        // Determine active environment based on app-specific latest tags
-        def appLatestTag = "${appName}-latest"
-        if (blueImageTag.contains(appLatestTag) && !greenImageTag.contains(appLatestTag)) {
-            env.ACTIVE_ENV = "BLUE"
-        } else if (greenImageTag.contains(appLatestTag) && !blueImageTag.contains(appLatestTag)) {
-            env.ACTIVE_ENV = "GREEN"
-        } else {
-            echo "⚠️ Could not determine ACTIVE_ENV from image tags for app${appSuffix}. Defaulting to BLUE"
-            env.ACTIVE_ENV = "BLUE"
-        }
-
-        env.ACTIVE_ENV = env.ACTIVE_ENV.toUpperCase()
-        env.IDLE_ENV = (env.ACTIVE_ENV == "BLUE") ? "GREEN" : "BLUE"
-        echo "✅ For app${appSuffix}: ACTIVE_ENV=${env.ACTIVE_ENV}, IDLE_ENV=${env.IDLE_ENV}"
-
-        env.ACTIVE_SERVICE = (env.ACTIVE_ENV == "BLUE") ? blueService : greenService
-        env.IDLE_SERVICE = (env.IDLE_ENV == "BLUE") ? blueService : greenService
+        
+        // Set active and idle services based on environment
+        activeService = (activeEnv == "BLUE") ? blueServiceName : greenServiceName
+        idleService = (idleEnv == "BLUE") ? blueServiceName : greenServiceName
         
         // Step 3: Tag current image for rollback
         def currentImageInfo = sh(
             script: """
-            aws ecr describe-images --repository-name ${env.ECR_REPO_NAME} --image-ids imageTag=${appName}-latest --region ${env.AWS_REGION} --query 'imageDetails[0].{digest:imageDigest,pushedAt:imagePushedAt}' --output json 2>/dev/null || echo '{}'
+            aws ecr describe-images --repository-name ${ecrRepoName} --image-ids imageTag=${appName}-latest --region ${awsRegion} --query 'imageDetails[0].{digest:imageDigest,pushedAt:imagePushedAt}' --output json 2>/dev/null || echo '{}'
             """,
             returnStdout: true
         ).trim()
 
         def imageDigest = getJsonFieldSafe(currentImageInfo, 'digest')
+        def rollbackTag = ""
 
         if (imageDigest) {
             def timestamp = new Date().format("yyyyMMdd-HHmmss")
-            def rollbackTag = "${appName}-rollback-${timestamp}"
+            rollbackTag = "${appName}-rollback-${timestamp}"
 
             echo "Found current '${appName}-latest' image with digest: ${imageDigest}"
             echo "Tagging current '${appName}-latest' image as '${rollbackTag}'..."
 
             sh """
-            aws ecr batch-get-image --repository-name ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --image-ids imageDigest=${imageDigest} --query 'images[0].imageManifest' --output text > image-manifest-${appName}.json
-            aws ecr put-image --repository-name ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --image-tag ${rollbackTag} --image-manifest file://image-manifest-${appName}.json
+            aws ecr batch-get-image --repository-name ${ecrRepoName} --region ${awsRegion} --image-ids imageDigest=${imageDigest} --query 'images[0].imageManifest' --output text > image-manifest-${appName}.json
+            aws ecr put-image --repository-name ${ecrRepoName} --region ${awsRegion} --image-tag ${rollbackTag} --image-manifest file://image-manifest-${appName}.json
             """
 
             echo "✅ Tagged rollback image for app${appSuffix}: ${rollbackTag}"
@@ -752,68 +856,173 @@ def updateApplication(Map config) {
 
         // Step 4: Build and push Docker image for this app
         def ecrUri = sh(
-            script: "aws ecr describe-repositories --repository-names ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --query 'repositories[0].repositoryUri' --output text",
+            script: "aws ecr describe-repositories --repository-names ${ecrRepoName} --region ${awsRegion} --query 'repositories[0].repositoryUri' --output text",
             returnStdout: true
         ).trim()
 
         echo "🔨 Building and pushing Docker image for app${appSuffix}..."
         sh """
-            aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
+            aws ecr get-login-password --region ${awsRegion} | docker login --username AWS --password-stdin ${ecrUri}
             cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
-            docker build -t ${env.ECR_REPO_NAME}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
-            docker tag ${env.ECR_REPO_NAME}:${appName}-latest ${ecrUri}:${appName}-latest
+            docker build -t ${ecrRepoName}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
+            docker tag ${ecrRepoName}:${appName}-latest ${ecrUri}:${appName}-latest
             docker push ${ecrUri}:${appName}-latest
         """
 
-        env.IMAGE_URI = "${ecrUri}:${appName}-latest"
-        echo "✅ Image pushed for app${appSuffix}: ${env.IMAGE_URI}"
+        def imageUri = "${ecrUri}:${appName}-latest"
+        echo "✅ Image pushed for app${appSuffix}: ${imageUri}"
 
         // Step 5: Update ECS Service
-        echo "🔄 Updating ${env.IDLE_ENV} service (${env.IDLE_SERVICE}) for app${appSuffix}..."
+        echo "🔄 Updating ${idleEnv} service (${idleService}) for app${appSuffix}..."
 
-        def taskDefArn = sh(
-            script: "aws ecs describe-services --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION} --query 'services[0].taskDefinition' --output text",
+        // Check if service exists
+        def serviceExists = sh(
+            script: """
+                aws ecs describe-services --cluster ${clusterName} --services ${idleService} --region ${awsRegion} --query 'services[0].status' --output text 2>/dev/null || echo "MISSING"
+            """,
             returnStdout: true
         ).trim()
+        
+        def newTaskDefJson
+        if (serviceExists == "MISSING" || serviceExists == "INACTIVE") {
+            echo "⚠️ Service ${idleService} does not exist or is inactive. Creating a new task definition."
+            
+            // Get account ID for role ARN
+            def accountId = sh(
+                script: "aws sts get-caller-identity --query 'Account' --output text",
+                returnStdout: true
+            ).trim()
+            
+            // Create a new task definition from scratch
+            newTaskDefJson = """
+            {
+                "family": "${idleService}-task",
+                "networkMode": "awsvpc",
+                "executionRoleArn": "arn:aws:iam::${accountId}:role/ecsTaskExecutionRole",
+                "containerDefinitions": [
+                    {
+                        "name": "${idleService}-container",
+                        "image": "${imageUri}",
+                        "essential": true,
+                        "portMappings": [
+                            {
+                                "containerPort": 80,
+                                "hostPort": 80,
+                                "protocol": "tcp"
+                            }
+                        ],
+                        "logConfiguration": {
+                            "logDriver": "awslogs",
+                            "options": {
+                                "awslogs-group": "/ecs/${idleService}",
+                                "awslogs-region": "${awsRegion}",
+                                "awslogs-stream-prefix": "ecs"
+                            }
+                        }
+                    }
+                ],
+                "requiresCompatibilities": [
+                    "FARGATE"
+                ],
+                "cpu": "256",
+                "memory": "512"
+            }
+            """
+        } else {
+            // Service exists, update its task definition
+            def taskDefArn = sh(
+                script: "aws ecs describe-services --cluster ${clusterName} --services ${idleService} --region ${awsRegion} --query 'services[0].taskDefinition' --output text",
+                returnStdout: true
+            ).trim()
+            
+            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
+                error "❌ No task definition found for service ${idleService}"
+            }
 
-        def taskDefJsonText = sh(
-            script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${env.AWS_REGION} --query 'taskDefinition' --output json",
-            returnStdout: true
-        ).trim()
+            def taskDefJsonText = sh(
+                script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${awsRegion} --query 'taskDefinition' --output json",
+                returnStdout: true
+            ).trim()
 
-        // Update task definition with new image
-        def newTaskDefJson = updateTaskDefImageAndSerialize(taskDefJsonText, env.IMAGE_URI, appName)
+            // Update task definition with new image
+            newTaskDefJson = updateTaskDefImageAndSerialize(taskDefJsonText, imageUri, appName)
+        }
+        
+        // Write task definition to file
         writeFile file: "new-task-def-${appSuffix}.json", text: newTaskDefJson
 
+        // Register the new task definition
         def newTaskDefArn = sh(
-            script: "aws ecs register-task-definition --cli-input-json file://new-task-def-${appSuffix}.json --region ${env.AWS_REGION} --query 'taskDefinition.taskDefinitionArn' --output text",
+            script: "aws ecs register-task-definition --cli-input-json file://new-task-def-${appSuffix}.json --region ${awsRegion} --query 'taskDefinition.taskDefinitionArn' --output text",
             returnStdout: true
         ).trim()
 
-        sh """
-        aws ecs update-service \\
-            --cluster ${env.ECS_CLUSTER} \\
-            --service ${env.IDLE_SERVICE} \\
-            --task-definition ${newTaskDefArn} \\
-            --desired-count 1 \\
-            --force-new-deployment \\
-            --region ${env.AWS_REGION}
-        """
+        if (serviceExists == "MISSING" || serviceExists == "INACTIVE") {
+            // Create a new service
+            echo "Creating new service ${idleService}..."
+            
+            // Get subnet IDs and security group IDs from default VPC
+            def subnetIds = sh(
+                script: """
+                    aws ec2 describe-subnets --filters "Name=default-for-az,Values=true" --query 'Subnets[*].SubnetId' --output text | tr '\\t' ','
+                """,
+                returnStdout: true
+            ).trim()
+            
+            def securityGroupId = sh(
+                script: """
+                    aws ec2 describe-security-groups --filters "Name=group-name,Values=default" --query 'SecurityGroups[0].GroupId' --output text
+                """,
+                returnStdout: true
+            ).trim()
+            
+            sh """
+            aws ecs create-service \\
+                --cluster ${clusterName} \\
+                --service-name ${idleService} \\
+                --task-definition ${newTaskDefArn} \\
+                --desired-count 1 \\
+                --launch-type FARGATE \\
+                --network-configuration "awsvpcConfiguration={subnets=[${subnetIds}],securityGroups=[${securityGroupId}],assignPublicIp=ENABLED}" \\
+                --region ${awsRegion}
+            """
+        } else {
+            // Update existing service
+            sh """
+            aws ecs update-service \\
+                --cluster ${clusterName} \\
+                --service ${idleService} \\
+                --task-definition ${newTaskDefArn} \\
+                --desired-count 1 \\
+                --force-new-deployment \\
+                --region ${awsRegion}
+            """
+        }
 
-        echo "✅ Updated service ${env.IDLE_ENV} for app${appSuffix} with task def: ${newTaskDefArn}"
+        echo "✅ Updated/created service ${idleEnv} for app${appSuffix} with task def: ${newTaskDefArn}"
 
-        echo "⏳ Waiting for ${env.IDLE_ENV} service for app${appSuffix} to stabilize..."
-        sh "aws ecs wait services-stable --cluster ${env.ECS_CLUSTER} --services ${env.IDLE_SERVICE} --region ${env.AWS_REGION}"
-        echo "✅ Service ${env.IDLE_ENV} for app${appSuffix} is stable"
+        echo "⏳ Waiting for ${idleEnv} service for app${appSuffix} to stabilize..."
+        try {
+            sh "aws ecs wait services-stable --cluster ${clusterName} --services ${idleService} --region ${awsRegion}"
+            echo "✅ Service ${idleEnv} for app${appSuffix} is stable"
+        } catch (Exception e) {
+            echo "⚠️ Warning: Service ${idleService} did not stabilize: ${e.message}"
+            echo "Continuing with deployment despite service stability issues."
+        }
 
+        // Return all the discovered resources for downstream stages
         return [
-            cluster: env.ECS_CLUSTER,
-            activeEnv: env.ACTIVE_ENV,
-            idleEnv: env.IDLE_ENV,
-            activeService: env.ACTIVE_SERVICE,
-            idleService: env.IDLE_SERVICE,
+            cluster: clusterName,
+            activeEnv: activeEnv,
+            idleEnv: idleEnv,
+            activeService: activeService,
+            idleService: idleService,
             appName: appName,
-            appSuffix: appSuffix
+            appSuffix: appSuffix,
+            awsRegion: awsRegion,
+            ecrRepoName: ecrRepoName,
+            imageUri: imageUri,
+            rollbackTag: rollbackTag
         ]
     } catch (Exception e) {
         echo "❌ Error occurred during ECS update for app${config.APP_SUFFIX ?: (config.appName ?: 'app_1').replace('app_', '')}:\n${e.message}"
