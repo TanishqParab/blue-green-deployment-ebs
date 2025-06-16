@@ -495,17 +495,13 @@ def updateApplication(Map config) {
             }
         }
 
-        // Step 2: Dynamically discover ECS services
+        // Step 2: Use hardcoded service names based on AWS console output
         echo "Listing services in cluster: ${env.ECS_CLUSTER}"
         
-        // Use hardcoded service names based on AWS console output
         def serviceNames = ["app1-blue-service", "app2-blue-service", "app3-blue-service", 
                            "app1-green-service", "app2-green-service", "app3-green-service"]
         
         echo "Using hardcoded service names: ${serviceNames.join(', ')}"
-
-        def serviceNames = serviceArns.collect { it.tokenize('/').last() }
-        echo "Discovered ECS services: ${serviceNames.join(', ')}"
 
         // Debug each service name to see exact format
         serviceNames.each { serviceName ->
@@ -869,7 +865,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         echo "⚠️ Error in updateTaskDefImageAndSerialize: ${e.message}"
         throw e
     }
-}
 
 
 def testEnvironment(Map config) {
