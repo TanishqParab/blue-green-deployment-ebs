@@ -1078,10 +1078,15 @@ def updateApplication(Map config) {
                 returnStdout: true
             ).trim()
             
-            // Create a new task definition from scratch
+            // Create a new task definition from scratch with app-specific task family
+            def taskFamily = "app${appSuffix}-task"
+            if (idleEnv.toLowerCase() == "green") {
+                taskFamily = "app${appSuffix}-task-green"
+            }
+            
             newTaskDefJson = """
             {
-                "family": "${idleService}-task",
+                "family": "${taskFamily}",
                 "networkMode": "awsvpc",
                 "executionRoleArn": "arn:aws:iam::${accountId}:role/ecsTaskExecutionRole",
                 "containerDefinitions": [
@@ -1115,22 +1120,130 @@ def updateApplication(Map config) {
             """
         } else {
             // Service exists, update its task definition
+            // Use app-specific task family naming pattern based on the list you provided
+            def taskFamily = "app${appSuffix}-task"
+            if (idleEnv.toLowerCase() == "green") {
+                taskFamily = "app${appSuffix}-task-green"
+            }
+            
+            echo "🔍 Looking for task definition with family: ${taskFamily}"
+            
+            // Try to get the latest active revision of the task definition by family name
             def taskDefArn = sh(
-                script: "aws ecs describe-services --cluster ${clusterName} --services ${idleService} --region ${awsRegion} --query 'services[0].taskDefinition' --output text",
+                script: "aws ecs list-task-definitions --family-prefix ${taskFamily} --status ACTIVE --sort DESC --max-items 1 --query 'taskDefinitionArns[0]' --output text --region ${awsRegion} || echo ''",
                 returnStdout: true
             ).trim()
             
+            // If not found by family name, try getting from service
             if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
-                error "❌ No task definition found for service ${idleService}"
+                echo "⚠️ No task definition found by family name. Trying to get from service..."
+                taskDefArn = sh(
+                    script: "aws ecs describe-services --cluster ${clusterName} --services ${idleService} --region ${awsRegion} --query 'services[0].taskDefinition' --output text || echo ''",
+                    returnStdout: true
+                ).trim()
             }
-
-            def taskDefJsonText = sh(
-                script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${awsRegion} --query 'taskDefinition' --output json",
-                returnStdout: true
-            ).trim()
-
-            // Update task definition with new image
-            newTaskDefJson = updateTaskDefImageAndSerialize(taskDefJsonText, imageUri, appName)
+            
+            if (!taskDefArn || taskDefArn == "null" || taskDefArn == "None") {
+                echo "⚠️ No task definition found for service ${idleService}. Creating a new one."
+                
+                // Get account ID for role ARN
+                def accountId = sh(
+                    script: "aws sts get-caller-identity --query 'Account' --output text",
+                    returnStdout: true
+                ).trim()
+                
+                // Create a new task definition from scratch
+                newTaskDefJson = """
+                {
+                    "family": "${taskFamily}",
+                    "networkMode": "awsvpc",
+                    "executionRoleArn": "arn:aws:iam::${accountId}:role/ecsTaskExecutionRole",
+                    "containerDefinitions": [
+                        {
+                            "name": "${idleService}-container",
+                            "image": "${imageUri}",
+                            "essential": true,
+                            "portMappings": [
+                                {
+                                    "containerPort": 80,
+                                    "hostPort": 80,
+                                    "protocol": "tcp"
+                                }
+                            ],
+                            "logConfiguration": {
+                                "logDriver": "awslogs",
+                                "options": {
+                                    "awslogs-group": "/ecs/${idleService}",
+                                    "awslogs-region": "${awsRegion}",
+                                    "awslogs-stream-prefix": "ecs"
+                                }
+                            }
+                        }
+                    ],
+                    "requiresCompatibilities": [
+                        "FARGATE"
+                    ],
+                    "cpu": "256",
+                    "memory": "512"
+                }
+                """
+            } else {
+                echo "✅ Found task definition: ${taskDefArn}"
+                def taskDefJsonText = sh(
+                    script: "aws ecs describe-task-definition --task-definition ${taskDefArn} --region ${awsRegion} --query 'taskDefinition' --output json || echo '{}'",
+                    returnStdout: true
+                ).trim()
+                
+                // Validate task definition JSON
+                if (!taskDefJsonText || taskDefJsonText.trim().isEmpty() || taskDefJsonText == "{}") {
+                    echo "⚠️ Empty task definition JSON returned. Creating a new task definition from scratch."
+                    
+                    // Get account ID for role ARN
+                    def accountId = sh(
+                        script: "aws sts get-caller-identity --query 'Account' --output text",
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Create a new task definition from scratch
+                    newTaskDefJson = """
+                    {
+                        "family": "${taskFamily}",
+                        "networkMode": "awsvpc",
+                        "executionRoleArn": "arn:aws:iam::${accountId}:role/ecsTaskExecutionRole",
+                        "containerDefinitions": [
+                            {
+                                "name": "${idleService}-container",
+                                "image": "${imageUri}",
+                                "essential": true,
+                                "portMappings": [
+                                    {
+                                        "containerPort": 80,
+                                        "hostPort": 80,
+                                        "protocol": "tcp"
+                                    }
+                                ],
+                                "logConfiguration": {
+                                    "logDriver": "awslogs",
+                                    "options": {
+                                        "awslogs-group": "/ecs/${idleService}",
+                                        "awslogs-region": "${awsRegion}",
+                                        "awslogs-stream-prefix": "ecs"
+                                    }
+                                }
+                            }
+                        ],
+                        "requiresCompatibilities": [
+                            "FARGATE"
+                        ],
+                        "cpu": "256",
+                        "memory": "512"
+                    }
+                    """
+                } else {
+                    // Update task definition with new image
+                    newTaskDefJson = updateTaskDefImageAndSerialize(taskDefJsonText, imageUri, appName)
+                }
+            }
         }
         
         // Write task definition to file
