@@ -433,6 +433,17 @@ def updateApplication(Map config) {
     echo "Running ECS update application logic..."
 
     try {
+        // Validate required environment variables
+        if (!env.AWS_REGION) {
+            error "❌ AWS_REGION environment variable is not set"
+        }
+        if (!env.ECR_REPO_NAME) {
+            error "❌ ECR_REPO_NAME environment variable is not set"
+        }
+        if (!env.WORKSPACE) {
+            error "❌ WORKSPACE environment variable is not set"
+        }
+
         // Debug statements to check input parameters
         echo "DEBUG: Received config: ${config}"
         echo "DEBUG: appName from config: ${config.appName}"
@@ -459,7 +470,7 @@ def updateApplication(Map config) {
 
         def selectedClusterArn = clusterArns[0]
         def selectedClusterName = selectedClusterArn.tokenize('/').last()
-        env.ECS_CLUSTER = selectedClusterName
+        env.ECS_CLUSTER = selectedClusterName ?: error "Failed to extract cluster name from ARN"
         echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
 
         // Step 2: Dynamically discover ECS services
@@ -483,9 +494,11 @@ def updateApplication(Map config) {
         // Fall back to default services if app-specific ones don't exist
         if (!blueService) {
             blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
+            echo "⚠️ Using default blue service name: ${blueService}"
         }
         if (!greenService) {
             greenService = serviceNames.find { it.toLowerCase() == "green-service" }
+            echo "⚠️ Using default green service name: ${greenService}"
         }
 
         if (!blueService || !greenService) {
@@ -534,9 +547,9 @@ def updateApplication(Map config) {
 
         // Determine active environment based on app_*-latest tags
         def appLatestTag = "${appName}-latest"
-        if (blueImageTag.contains(appLatestTag) && !greenImageTag.contains(appLatestTag)) {
+        if (blueImageTag?.contains(appLatestTag) && !greenImageTag?.contains(appLatestTag)) {
             env.ACTIVE_ENV = "BLUE"
-        } else if (greenImageTag.contains(appLatestTag) && !blueImageTag.contains(appLatestTag)) {
+        } else if (greenImageTag?.contains(appLatestTag) && !blueImageTag?.contains(appLatestTag)) {
             env.ACTIVE_ENV = "GREEN"
         } else {
             echo "⚠️ Could not determine ACTIVE_ENV from image tags clearly. Defaulting ACTIVE_ENV to BLUE"
@@ -583,21 +596,34 @@ def updateApplication(Map config) {
         }
 
         // Step 5: Build and push Docker image for this app
-        def ecrUri = sh(
-            script: "aws ecr describe-repositories --repository-names ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --query 'repositories[0].repositoryUri' --output text",
-            returnStdout: true
-        ).trim()
+        def ecrUri
+        try {
+            ecrUri = sh(
+                script: "aws ecr describe-repositories --repository-names ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --query 'repositories[0].repositoryUri' --output text",
+                returnStdout: true
+            )?.trim()
+            
+            if (!ecrUri) {
+                error "❌ Failed to get ECR repository URI"
+            }
+        } catch (Exception e) {
+            error "❌ Error getting ECR repository URI: ${e.message}"
+        }
 
         // Use explicit imageTag variable to ensure consistency
         def imageTag = "${appName}-latest"
         
-        sh """
-            aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
-            cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
-            docker build -t ${env.ECR_REPO_NAME}:${imageTag} --build-arg APP_NAME=${appSuffix} .
-            docker tag ${env.ECR_REPO_NAME}:${imageTag} ${ecrUri}:${imageTag}
-            docker push ${ecrUri}:${imageTag}
-        """
+        try {
+            sh """
+                aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
+                cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
+                docker build -t ${env.ECR_REPO_NAME}:${imageTag} --build-arg APP_NAME=${appSuffix} .
+                docker tag ${env.ECR_REPO_NAME}:${imageTag} ${ecrUri}:${imageTag}
+                docker push ${ecrUri}:${imageTag}
+            """
+        } catch (Exception e) {
+            error "❌ Docker build/push failed: ${e.message}"
+        }
 
         env.IMAGE_URI = "${ecrUri}:${imageTag}"
         echo "✅ Image pushed: ${env.IMAGE_URI}"
@@ -766,6 +792,8 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         }
         
         def taskDef = new JsonSlurper().parseText(jsonText)
+        
+        // Remove fields that shouldn't be in the new task definition
         ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes', 'compatibilities',
          'registeredAt', 'registeredBy', 'deregisteredAt'].each { field ->
             taskDef.remove(field)
