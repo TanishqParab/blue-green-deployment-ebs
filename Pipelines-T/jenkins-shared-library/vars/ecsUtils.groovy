@@ -468,18 +468,17 @@ def updateApplication(Map config) {
 
 
         // Step 2: Dynamically discover ECS services
-        def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output json",
+        // Step 2: Dynamically discover ECS services using direct text output
+        def serviceNames = sh(
+            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output text | tr '\\t' '\\n' | grep -o '[^/]*\$'",
             returnStdout: true
-        ).trim()
-
-        def serviceArns = parseJsonWithErrorHandling(servicesJson)?.serviceArns
-        if (!serviceArns || serviceArns.isEmpty()) {
+        ).trim().split("\\s+")
+        
+        if (!serviceNames || serviceNames.isEmpty()) {
             error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
         }
-
-        def serviceNames = serviceArns.collect { it.tokenize('/').last() }
-        echo "Discovered ECS services: ${serviceNames}"
+        
+        echo "Discovered ECS services: ${serviceNames.join(', ')}"
 
         // Look for app-specific services first with the correct naming pattern
         def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
@@ -494,7 +493,7 @@ def updateApplication(Map config) {
         }
 
         if (!blueService || !greenService) {
-            error "❌ Could not find both 'blue' and 'green' ECS services in cluster ${env.ECS_CLUSTER}. Found services: ${serviceNames}"
+            error "❌ Could not find both 'blue' and 'green' ECS services in cluster ${env.ECS_CLUSTER}. Found services: ${serviceNames.join(', ')}"
         }
         
         echo "Using blue service: ${blueService}"
