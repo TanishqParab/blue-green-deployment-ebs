@@ -574,9 +574,13 @@ def updateApplication(Map config) {
             }
         } catch (Exception e) {
             echo "⚠️ Error getting ECR URI: ${e.message}"
-            // Use hardcoded URI format as fallback
-            ecrUri = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/${env.ECR_REPO_NAME}"
-            echo "Using fallback ECR URI: ${ecrUri}"
+            // Use direct command to get account ID and build URI
+            def accountId = sh(
+                script: "aws sts get-caller-identity --query 'Account' --output text",
+                returnStdout: true
+            ).trim()
+            ecrUri = "${accountId}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/${env.ECR_REPO_NAME}"
+            echo "Using constructed ECR URI: ${ecrUri}"
         }
 
         // Use explicit imageTag variable to ensure consistency
