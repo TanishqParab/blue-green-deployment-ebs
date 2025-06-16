@@ -450,6 +450,18 @@ def updateApplication(Map config) {
         if (config.ECS_CLUSTER) {
             env.ECS_CLUSTER = config.ECS_CLUSTER
             echo "✅ Using ECS cluster from config: ${env.ECS_CLUSTER}"
+            
+            // Verify the cluster exists
+            def clusterExists = sh(
+                script: "aws ecs describe-clusters --clusters ${env.ECS_CLUSTER} --query 'clusters[0].status' --output text || echo 'MISSING'",
+                returnStdout: true
+            ).trim()
+            
+            echo "Cluster status: ${clusterExists}"
+            
+            if (clusterExists == 'MISSING' || clusterExists == 'INACTIVE') {
+                error "❌ ECS cluster ${env.ECS_CLUSTER} does not exist or is inactive"
+            }
         } else {
             // Try to get cluster from terraform output first
             try {
@@ -484,33 +496,55 @@ def updateApplication(Map config) {
         }
 
         // Step 2: Dynamically discover ECS services
-        def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output json",
-            returnStdout: true
-        ).trim()
-
-        def serviceArns = parseJsonSafe(servicesJson)?.serviceArns
-        if (!serviceArns || serviceArns.isEmpty()) {
-            error "❌ No ECS services found in cluster ${env.ECS_CLUSTER}"
-        }
+        echo "Listing services in cluster: ${env.ECS_CLUSTER}"
+        
+        // Use hardcoded service names based on AWS console output
+        def serviceNames = ["app1-blue-service", "app2-blue-service", "app3-blue-service", 
+                           "app1-green-service", "app2-green-service", "app3-green-service"]
+        
+        echo "Using hardcoded service names: ${serviceNames.join(', ')}"
 
         def serviceNames = serviceArns.collect { it.tokenize('/').last() }
         echo "Discovered ECS services: ${serviceNames.join(', ')}"
 
-        // Look for app-specific services with the correct naming pattern
-        def blueService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-blue-service" }
-        def greenService = serviceNames.find { it.toLowerCase() == "app${appSuffix}-green-service" }
+        // Debug each service name to see exact format
+        serviceNames.each { serviceName ->
+            echo "Service name: '${serviceName}'"
+        }
+        
+        // Look for app-specific services with the correct naming pattern - try different formats
+        def blueService = serviceNames.find { 
+            it.toLowerCase() == "app${appSuffix}-blue-service" || 
+            it.toLowerCase() == "app${appSuffix}blue-service" || 
+            it.toLowerCase() == "app${appSuffix}-blueservice" ||
+            it.toLowerCase() == "app${appSuffix}blueservice"
+        }
+        
+        def greenService = serviceNames.find { 
+            it.toLowerCase() == "app${appSuffix}-green-service" || 
+            it.toLowerCase() == "app${appSuffix}green-service" || 
+            it.toLowerCase() == "app${appSuffix}-greenservice" ||
+            it.toLowerCase() == "app${appSuffix}greenservice"
+        }
         
         // Fall back to default services if app-specific ones don't exist
         if (!blueService) {
-            blueService = serviceNames.find { it.toLowerCase() == "blue-service" }
+            blueService = serviceNames.find { 
+                it.toLowerCase() == "blue-service" || 
+                it.toLowerCase() == "blueservice" ||
+                it.toLowerCase().contains("blue")
+            }
             echo "Using default blue service: ${blueService}"
         } else {
             echo "Using app-specific blue service: ${blueService}"
         }
         
         if (!greenService) {
-            greenService = serviceNames.find { it.toLowerCase() == "green-service" }
+            greenService = serviceNames.find { 
+                it.toLowerCase() == "green-service" || 
+                it.toLowerCase() == "greenservice" ||
+                it.toLowerCase().contains("green")
+            }
             echo "Using default green service: ${greenService}"
         } else {
             echo "Using app-specific green service: ${greenService}"
@@ -836,6 +870,7 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         throw e
     }
 }
+
 
 def testEnvironment(Map config) {
     echo "🔍 Testing ${env.IDLE_ENV} environment..."
