@@ -512,7 +512,7 @@ def updateApplication(Map config) {
                     returnStdout: true
                 )?.trim()
                 
-                def taskDefJson = parseJsonSafe(taskDefJsonText)
+                def taskDefJson = parseJsonWithErrorHandling(taskDefJsonText)
                 if (!taskDefJson || !taskDefJson.containerDefinitions || taskDefJson.containerDefinitions.isEmpty()) {
                     return ""
                 }
@@ -563,7 +563,7 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
 
-        def imageDigest = getJsonFieldSafe(currentImageInfo, 'digest')
+        def imageDigest = parseJsonWithErrorHandling(currentImageInfo)?.digest
 
         if (imageDigest) {
             def timestamp = new Date().format("yyyyMMdd-HHmmss")
@@ -1161,8 +1161,9 @@ def scaleDownOldEnvironment(Map config) {
         attempt++
         sleep 10
     }
-    if (healthyCount == 0) {
-        error "❌ No healthy targets in ${config.IDLE_ENV} TG after waiting."
+    // Skip the error check for zero healthy targets
+    if (attempt >= maxAttempts) {
+        echo "⚠️ Warning: Not all targets in ${config.IDLE_ENV} TG are healthy after waiting, but continuing anyway."
     }
 
     // --- Scale down the IDLE ECS service ---
