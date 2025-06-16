@@ -455,20 +455,27 @@ def updateApplication(Map config) {
         """
         
         // Build and push Docker image for the specified app with app_*-latest tag
+        echo "ECR Repository URI: ${ecrUri}"
+        
+        if (!ecrUri || ecrUri.isEmpty()) {
+            error "❌ ECR repository URI is empty. Check if repository '${config.ecrRepoName ?: env.ECR_REPO_NAME}' exists."
+        }
+        
+        // Authenticate with ECR
         sh """
-            # Authenticate Docker to ECR
             aws ecr get-login-password --region ${config.awsRegion ?: env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
         """
         
+        // Build and push Docker image
         sh """
             # Navigate to the directory with Dockerfile
             cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
             
-            # Build the Docker image with latest tag first
-            docker build -t ${ecrUri}:latest .
+            # Build the Docker image with a temporary tag
+            docker build -t app-image:latest .
             
-            # Tag the image with app-specific latest tag
-            docker tag ${ecrUri}:latest ${ecrUri}:${appName}-latest
+            # Tag the image for ECR
+            docker tag app-image:latest ${ecrUri}:${appName}-latest
             
             # Push the app-specific latest tag
             docker push ${ecrUri}:${appName}-latest
