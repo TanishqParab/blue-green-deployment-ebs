@@ -651,11 +651,17 @@ def updateApplication(Map config) {
         
         echo "🚀 Running ECS update for application: ${appName}"
         
-        // Get AWS region dynamically
+        // Get AWS region dynamically - ensure it's a valid region string
         def awsRegion = sh(
             script: "aws configure get region || echo 'us-east-1'",
             returnStdout: true
         ).trim()
+        
+        // Validate region is not an ARN or other invalid value
+        if (awsRegion.contains(":")) {
+            echo "⚠️ Invalid AWS region detected: ${awsRegion}. Using default us-east-1."
+            awsRegion = "us-east-1"
+        }
         
         // Discover ECR repository
         def ecrRepoName = config.ecrRepoName
