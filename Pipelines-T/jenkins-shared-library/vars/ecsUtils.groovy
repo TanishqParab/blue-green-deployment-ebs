@@ -445,6 +445,15 @@ def updateApplication(Map config) {
             returnStdout: true
         ).trim()
         
+        // Make sure we're using the right app file
+        sh """
+            # Navigate to the directory with Dockerfile
+            cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
+            
+            # Make sure we're using the right app file
+            cp app_${appSuffix}.py app.py
+        """
+        
         // Build and push Docker image for the specified app with app_*-latest tag
         sh """
             # Authenticate Docker to ECR
@@ -453,11 +462,11 @@ def updateApplication(Map config) {
             # Navigate to the directory with Dockerfile
             cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
             
-            # Build the Docker image
-            docker build -t ${config.ecrRepoName ?: env.ECR_REPO_NAME}:${appName}-latest --build-arg APP_NAME=${appSuffix} .
+            # Build the Docker image with latest tag first
+            docker build -t ${config.ecrRepoName ?: env.ECR_REPO_NAME}:latest .
             
             # Tag the image with app-specific latest tag
-            docker tag ${config.ecrRepoName ?: env.ECR_REPO_NAME}:${appName}-latest ${ecrUri}:${appName}-latest
+            docker tag ${config.ecrRepoName ?: env.ECR_REPO_NAME}:latest ${ecrUri}:${appName}-latest
             
             # Push the app-specific latest tag
             docker push ${ecrUri}:${appName}-latest
@@ -647,7 +656,6 @@ def updateTaskDefImageAndSerialize(String jsonText, String imageUri, String appN
         throw e
     }
 }
-
 
 def testEnvironment(Map config) {
     echo "🔍 Testing ${env.IDLE_ENV} environment..."
