@@ -560,19 +560,28 @@ def updateApplication(Map config) {
         }
 
         // Step 5: Build and push Docker image for this app
-        def ecrUri = sh(
-            script: "aws ecr describe-repositories --repository-names ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --query 'repositories[0].repositoryUri' --output text",
-            returnStdout: true
-        ).trim()
-
-        // Validate ECR URI
-        if (!ecrUri || ecrUri.startsWith("{")) {
-            error "❌ Invalid ECR repository URI: ${ecrUri}"
+        // Step 5: Build and push Docker image for this app
+        def ecrUri
+        try {
+            ecrUri = sh(
+                script: "aws ecr describe-repositories --repository-names ${env.ECR_REPO_NAME} --region ${env.AWS_REGION} --query 'repositories[0].repositoryUri' --output text",
+                returnStdout: true
+            ).trim()
+            
+            // Check if the URI is valid
+            if (!ecrUri || ecrUri.contains("{") || ecrUri.contains("}")) {
+                throw new Exception("Invalid ECR URI format")
+            }
+        } catch (Exception e) {
+            echo "⚠️ Error getting ECR URI: ${e.message}"
+            // Use hardcoded URI format as fallback
+            ecrUri = "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com/${env.ECR_REPO_NAME}"
+            echo "Using fallback ECR URI: ${ecrUri}"
         }
 
         // Use explicit imageTag variable to ensure consistency
         def imageTag = "${appName}-latest"
-        
+
         sh """
             aws ecr get-login-password --region ${env.AWS_REGION} | docker login --username AWS --password-stdin ${ecrUri}
             cd ${env.WORKSPACE}/blue-green-deployment/modules/ecs/scripts
