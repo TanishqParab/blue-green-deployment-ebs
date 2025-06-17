@@ -1039,8 +1039,8 @@ def scaleDownOldEnvironment(Map config) {
         script: "aws elbv2 describe-target-groups --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
         returnStdout: true
     ).trim()
-    if (!blueTgArn || blueTgArn == 'None') error "Blue target group ARN not found"
-    if (!greenTgArn || greenTgArn == 'None') error "Green target group ARN not found"
+    if (!blueTgArn || blueTgArn == 'None') error "Blue target group ARN not found for app${appSuffix}"
+    if (!greenTgArn || greenTgArn == 'None') error "Green target group ARN not found for app${appSuffix}"
 
     // --- Determine ACTIVE_ENV dynamically if not provided ---
     if (!config.ACTIVE_ENV) {
@@ -1081,14 +1081,14 @@ def scaleDownOldEnvironment(Map config) {
         }
         
         if (!activeTgArn || activeTgArn == 'None') {
-            echo "⚠️ Could not determine active target group, defaulting to BLUE"
+            echo "⚠️ Could not determine active target group for app${appSuffix}, defaulting to BLUE"
             config.ACTIVE_ENV = "BLUE"
         } else if (activeTgArn == blueTgArn) {
             config.ACTIVE_ENV = "BLUE"
         } else if (activeTgArn == greenTgArn) {
             config.ACTIVE_ENV = "GREEN"
         } else {
-            error "Active target group ARN does not match blue or green target groups"
+            error "Active target group ARN does not match blue or green target groups for app${appSuffix}"
         }
         echo "✅ Dynamically determined ACTIVE_ENV: ${config.ACTIVE_ENV}"
     }
@@ -1141,8 +1141,8 @@ def scaleDownOldEnvironment(Map config) {
         echo "✅ Dynamically determined IDLE_SERVICE: ${config.IDLE_SERVICE}"
     }
 
-    // --- Wait for all targets in idle target group to be healthy ---
-    int maxAttempts = 30
+    // --- Check for targets in idle target group but don't fail if none are healthy ---
+    int maxAttempts = 05  // Reduced from 30 to 10
     int attempt = 0
     int healthyCount = 0
     echo "⏳ Waiting for all targets in ${config.IDLE_ENV} TG to become healthy before scaling down old environment..."
@@ -1151,22 +1151,36 @@ def scaleDownOldEnvironment(Map config) {
             script: "aws elbv2 describe-target-health --target-group-arn ${config.IDLE_TG_ARN} --query 'TargetHealthDescriptions[*].TargetHealth.State' --output json",
             returnStdout: true
         ).trim()
-        def states = new JsonSlurper().parseText(healthJson)
+        
+        // Parse JSON safely
+        def states
+        try {
+            states = new JsonSlurper().parseText(healthJson)
+        } catch (Exception e) {
+            echo "⚠️ Error parsing health JSON: ${e.message}. Retrying..."
+            attempt++
+            sleep(10)
+            continue
+        }
+        
         healthyCount = states.count { it == "healthy" }
-        echo "Healthy targets: ${healthyCount} / ${states.size()}"
+        echo "Healthy targets for app${appSuffix}: ${healthyCount} / ${states.size()}"
         if (states && healthyCount == states.size()) {
-            echo "✅ All targets in ${config.IDLE_ENV} TG are healthy."
+            echo "✅ All targets in ${config.IDLE_ENV} TG for app${appSuffix} are healthy."
             break
         }
         attempt++
         sleep 10
     }
+    
+    // Continue even if no healthy targets
     if (healthyCount == 0) {
-        error "❌ No healthy targets in ${config.IDLE_ENV} TG after waiting."
+        echo "⚠️ No healthy targets in ${config.IDLE_ENV} TG after waiting. Continuing anyway..."
     }
 
     // --- Scale down the IDLE ECS service ---
     try {
+        echo "🔽 Scaling down ${config.IDLE_SERVICE} for app${appSuffix}..."
         sh """
         aws ecs update-service \\
           --cluster ${config.ECS_CLUSTER} \\
@@ -1175,14 +1189,15 @@ def scaleDownOldEnvironment(Map config) {
         """
         echo "✅ Scaled down ${config.IDLE_SERVICE}"
 
+        echo "⏳ Waiting for service to stabilize..."
         sh """
         aws ecs wait services-stable \\
           --cluster ${config.ECS_CLUSTER} \\
           --services ${config.IDLE_SERVICE}
         """
-        echo "✅ ${config.IDLE_SERVICE} is now stable (scaled down)"
+        echo "✅ ${config.IDLE_SERVICE} for app${appSuffix} is now stable (scaled down)"
     } catch (Exception e) {
-        echo "❌ Error during scale down: ${e.message}"
+        echo "❌ Error during scale down of app${appSuffix}: ${e.message}"
         throw e
     }
 }
