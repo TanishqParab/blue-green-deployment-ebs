@@ -1119,9 +1119,8 @@ def scaleDownOldEnvironment(Map config) {
         echo "⚙️ IDLE_SERVICE not set, determining dynamically based on IDLE_ENV..."
         def idleEnvLower = config.IDLE_ENV.toLowerCase()
         
-        // Use default service names directly instead of trying to query services
-        def idleServiceName = "${idleEnvLower}-service"
-        config.IDLE_SERVICE = idleServiceName
+        // Use default service name directly
+        config.IDLE_SERVICE = "${idleEnvLower}-service"
         echo "✅ Using default service name: ${config.IDLE_SERVICE}"
     }
 
@@ -1140,7 +1139,7 @@ def scaleDownOldEnvironment(Map config) {
             // Parse JSON safely
             def states
             try {
-                states = new groovy.json.JsonSlurper().parseText(healthJson)
+                states = new JsonSlurper().parseText(healthJson)
                 healthyCount = states.count { it == "healthy" }
                 echo "Healthy targets for app${appSuffix}: ${healthyCount} / ${states.size()}"
                 if (states && healthyCount == states.size() && states.size() > 0) {
@@ -1183,5 +1182,6 @@ def scaleDownOldEnvironment(Map config) {
         throw e
     }
 }
+
 
 
