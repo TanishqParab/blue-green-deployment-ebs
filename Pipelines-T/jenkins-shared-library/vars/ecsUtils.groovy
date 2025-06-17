@@ -361,6 +361,9 @@ def ensureTargetGroupAssociation(Map config) {
     if (!config.LISTENER_ARN || config.LISTENER_ARN.trim() == "") {
         error "LISTENER_ARN is missing or empty"
     }
+    if (!config.ALB_ARN || config.ALB_ARN.trim() == "") {
+        error "ALB_ARN is missing or empty"
+    }
     
     // Get app name from config
     def appName = config.APP_NAME ?: "app_1"
@@ -374,11 +377,18 @@ def ensureTargetGroupAssociation(Map config) {
         returnStdout: true
     ).trim()
 
-    // If output is empty or "None", create a rule
+    // If output is empty or "None", create a rule and register with ALB
     if (!targetGroupInfo || targetGroupInfo.isEmpty() || targetGroupInfo == "None") {
-        echo "⚠️ Target group ${config.IDLE_ENV} is not associated with a load balancer. Creating a path-based rule..."
+        echo "⚠️ Target group ${config.IDLE_ENV} is not associated with a load balancer. Creating association..."
         
-        // Use fixed priority to avoid parsing issues
+        // First, modify the target group to associate it with the ALB
+        sh """
+        aws elbv2 modify-target-group-attributes \\
+            --target-group-arn ${config.IDLE_TG_ARN} \\
+            --attributes Key=load_balancing.cross_zone.enabled,Value=true
+        """
+        
+        // Then create a path-based rule to route traffic to this target group
         def nextPriority = 250
         echo "Using rule priority: ${nextPriority}"
         
