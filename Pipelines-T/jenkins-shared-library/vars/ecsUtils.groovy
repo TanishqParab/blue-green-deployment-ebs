@@ -634,7 +634,7 @@ def updateApplication(Map config) {
             }
         }
 
-        // Get the task definition JSON directly
+        // Get the task definition JSON directly - FIXED: Don't specify region
         def taskDefJsonText
         try {
             // Always use the task definition family name directly
@@ -713,6 +713,7 @@ def updateApplication(Map config) {
         error "Failed to update ECS application"
     }
 }
+
 
 @NonCPS
 def parseJsonSafe(String jsonText) {
