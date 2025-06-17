@@ -424,29 +424,6 @@ def parseJsonWithErrorHandling(String text) {
     }
 }
 
-@NonCPS
-def parseJsonWithErrorHandling(String text) {
-    try {
-        if (!text || text.trim().isEmpty() || text.trim() == "null") {
-            return []
-        }
-        
-        def parsed = new groovy.json.JsonSlurper().parseText(text)
-        
-        if (parsed instanceof List) {
-            return parsed
-        } else if (parsed instanceof Map) {
-            def safeMap = [:]
-            safeMap.putAll(parsed)
-            return safeMap
-        } else {
-            return []
-        }
-    } catch (Exception e) {
-        echo "⚠️ Error parsing JSON: ${e.message}"
-        return []
-    }
-}
 
 
 import groovy.json.JsonSlurper
