@@ -1045,12 +1045,12 @@ def scaleDownOldEnvironment(Map config) {
         script: "aws elbv2 describe-target-groups --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
         returnStdout: true
     ).trim()
-    if (!blueTgArn || blueTgArn == 'None') error "Blue target group ARN not found"
-    if (!greenTgArn || greenTgArn == 'None') error "Green target group ARN not found"
+    if (!blueTgArn || blueTgArn == 'None') error "Blue target group ARN not found for app${appSuffix}"
+    if (!greenTgArn || greenTgArn == 'None') error "Green target group ARN not found for app${appSuffix}"
 
     // --- Determine ACTIVE_ENV dynamically if not provided ---
     if (!config.ACTIVE_ENV) {
-        echo "⚙️ ACTIVE_ENV not set, determining dynamically..."
+        echo "⚙️ ACTIVE_ENV not set, determining dynamically for app${appSuffix}..."
         
         // For app-specific routing, use the exact path pattern from Terraform
         def appPathPattern = "/app${appSuffix}*"
@@ -1087,14 +1087,14 @@ def scaleDownOldEnvironment(Map config) {
         }
         
         if (!activeTgArn || activeTgArn == 'None') {
-            echo "⚠️ Could not determine active target group, defaulting to BLUE"
+            echo "⚠️ Could not determine active target group for app${appSuffix}, defaulting to BLUE"
             config.ACTIVE_ENV = "BLUE"
         } else if (activeTgArn == blueTgArn) {
             config.ACTIVE_ENV = "BLUE"
         } else if (activeTgArn == greenTgArn) {
             config.ACTIVE_ENV = "GREEN"
         } else {
-            error "Active target group ARN does not match blue or green target groups"
+            error "Active target group ARN does not match blue or green target groups for app${appSuffix}"
         }
         echo "✅ Dynamically determined ACTIVE_ENV: ${config.ACTIVE_ENV}"
     }
@@ -1119,32 +1119,10 @@ def scaleDownOldEnvironment(Map config) {
         echo "⚙️ IDLE_SERVICE not set, determining dynamically based on IDLE_ENV..."
         def idleEnvLower = config.IDLE_ENV.toLowerCase()
         
-        // Try app-specific service name first
-        def expectedIdleServiceName = "app${appSuffix}-${idleEnvLower}-service"
-        def servicesJson = sh(
-            script: "aws ecs list-services --cluster ${config.ECS_CLUSTER} --query 'serviceArns' --output json",
-            returnStdout: true
-        ).trim()
-        def services = new JsonSlurper().parseText(servicesJson)
-        if (!services || services.isEmpty()) {
-            error "No ECS services found in cluster ${config.ECS_CLUSTER}"
-        }
-        
-        def matchedIdleServiceArn = services.find { it.toLowerCase().endsWith(expectedIdleServiceName.toLowerCase()) }
-        
-        // Fall back to default service name if app-specific not found
-        if (!matchedIdleServiceArn) {
-            expectedIdleServiceName = "${idleEnvLower}-service"
-            matchedIdleServiceArn = services.find { it.toLowerCase().endsWith(expectedIdleServiceName.toLowerCase()) }
-        }
-        
-        if (!matchedIdleServiceArn) {
-            error "Idle service not found in cluster ${config.ECS_CLUSTER}"
-        }
-        
-        def idleServiceName = matchedIdleServiceArn.tokenize('/').last()
+        // Use default service names directly instead of trying to query services
+        def idleServiceName = "${idleEnvLower}-service"
         config.IDLE_SERVICE = idleServiceName
-        echo "✅ Dynamically determined IDLE_SERVICE: ${config.IDLE_SERVICE}"
+        echo "✅ Using default service name: ${config.IDLE_SERVICE}"
     }
 
     // --- Check targets but continue even if none are healthy ---
@@ -1158,23 +1136,33 @@ def scaleDownOldEnvironment(Map config) {
                 script: "aws elbv2 describe-target-health --target-group-arn ${config.IDLE_TG_ARN} --query 'TargetHealthDescriptions[*].TargetHealth.State' --output json",
                 returnStdout: true
             ).trim()
-            def states = new JsonSlurper().parseText(healthJson)
-            healthyCount = states.count { it == "healthy" }
-            echo "Healthy targets: ${healthyCount} / ${states.size()}"
-            if (states && healthyCount == states.size()) {
-                echo "✅ All targets in ${config.IDLE_ENV} TG are healthy."
-                break
+            
+            // Parse JSON safely
+            def states
+            try {
+                states = new groovy.json.JsonSlurper().parseText(healthJson)
+                healthyCount = states.count { it == "healthy" }
+                echo "Healthy targets for app${appSuffix}: ${healthyCount} / ${states.size()}"
+                if (states && healthyCount == states.size() && states.size() > 0) {
+                    echo "✅ All targets in ${config.IDLE_ENV} TG for app${appSuffix} are healthy."
+                    break
+                }
+            } catch (Exception e) {
+                echo "⚠️ Error parsing health JSON: ${e.message}. Continuing anyway."
             }
+            
             attempt++
             sleep 10
         }
+        
+        echo "⚠️ Proceeding with scale down regardless of target health status."
     } catch (Exception e) {
         echo "⚠️ Error checking target health: ${e.message}. Continuing anyway."
     }
 
     // --- Scale down the IDLE ECS service ---
     try {
-        echo "🔽 Scaling down ${config.IDLE_SERVICE}..."
+        echo "🔽 Scaling down ${config.IDLE_SERVICE} for app${appSuffix}..."
         sh """
         aws ecs update-service \\
           --cluster ${config.ECS_CLUSTER} \\
@@ -1189,10 +1177,11 @@ def scaleDownOldEnvironment(Map config) {
           --cluster ${config.ECS_CLUSTER} \\
           --services ${config.IDLE_SERVICE}
         """
-        echo "✅ ${config.IDLE_SERVICE} is now stable (scaled down)"
+        echo "✅ ${config.IDLE_SERVICE} for app${appSuffix} is now stable (scaled down)"
     } catch (Exception e) {
-        echo "❌ Error during scale down: ${e.message}"
+        echo "❌ Error during scale down of app${appSuffix}: ${e.message}"
         throw e
     }
 }
+
 
