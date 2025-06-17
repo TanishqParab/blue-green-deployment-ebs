@@ -446,23 +446,29 @@ def updateApplication(Map config) {
         
         echo "Updating application: ${appName}"
         
-        // Step 1: Dynamically discover ECS cluster - FIXED: Don't specify region
-        def clustersJson = sh(
-            script: "aws ecs list-clusters --output json",
-            returnStdout: true
-        ).trim()
-
-        def clusterArns = parseJsonWithErrorHandling(clustersJson)?.clusterArns
-        if (!clusterArns || clusterArns.isEmpty()) {
-            error "❌ No ECS clusters found"
+        // Step 1: Use the ECS cluster from config if available, otherwise try to discover it
+        if (config.ECS_CLUSTER) {
+            env.ECS_CLUSTER = config.ECS_CLUSTER
+            echo "✅ Using ECS cluster from config: ${env.ECS_CLUSTER}"
+        } else {
+            // Try to get the cluster name directly without using list-clusters
+            def clusterName = "blue-green-cluster"  // Default name based on your infrastructure
+            
+            // Check if the cluster exists
+            def clusterExists = sh(
+                script: "aws ecs describe-clusters --clusters ${clusterName} --query 'clusters[0].status' --output text || echo 'MISSING'",
+                returnStdout: true
+            ).trim()
+            
+            if (clusterExists != "MISSING" && clusterExists != "INACTIVE") {
+                env.ECS_CLUSTER = clusterName
+                echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
+            } else {
+                error "❌ Could not find ECS cluster. Please specify ECS_CLUSTER in config."
+            }
         }
 
-        def selectedClusterArn = clusterArns[0]
-        def selectedClusterName = selectedClusterArn.tokenize('/').last()
-        env.ECS_CLUSTER = selectedClusterName
-        echo "✅ Using ECS cluster: ${env.ECS_CLUSTER}"
-
-        // Step 2: Dynamically discover ECS services - FIXED: Don't specify region
+        // Step 2: Dynamically discover ECS services
         def servicesJson = sh(
             script: "aws ecs list-services --cluster ${env.ECS_CLUSTER} --output json",
             returnStdout: true
