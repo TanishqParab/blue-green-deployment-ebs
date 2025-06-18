@@ -250,16 +250,18 @@ def deployToBlueInstance(Map config) {
     def appName = config.appName ?: ""
     def blueTargetGroupName = appName ? "blue-tg-${appName}" : (config.blueTargetGroupName ?: "blue-tg")
     def blueTag = appName ? "${appName}-blue-instance" : (config.blueTag ?: "Blue-Instance")
+    def greenTag = appName ? "${appName}-green-instance" : (config.greenTag ?: "Green-Instance")
     
     echo "🔍 Using blue target group name: ${blueTargetGroupName}"
     echo "🔍 Using blue instance tag: ${blueTag}"
+    echo "🔍 Using green instance tag: ${greenTag}"
     
     // 1. Dynamically get ALB ARN by ALB name (or partial match)
     def albArn = sh(
         script: """
-        aws elbv2 describe-load-balancers \\
-            --names "${config.albName}" \\
-            --query 'LoadBalancers[0].LoadBalancerArn' \\
+        aws elbv2 describe-load-balancers \\\\
+            --names "${config.albName}" \\\\
+            --query 'LoadBalancers[0].LoadBalancerArn' \\\\
             --output text
         """,
         returnStdout: true
@@ -273,9 +275,9 @@ def deployToBlueInstance(Map config) {
     // 2. Dynamically get Blue Target Group ARN filtered by ALB ARN and TG name/tag
     def blueTGArn = sh(
         script: """
-        aws elbv2 describe-target-groups \\
-            --load-balancer-arn ${albArn} \\
-            --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" \\
+        aws elbv2 describe-target-groups \\\\
+            --load-balancer-arn ${albArn} \\\\
+            --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" \\\\
             --output text
         """,
         returnStdout: true
@@ -289,7 +291,16 @@ def deployToBlueInstance(Map config) {
     // 3. Get Blue Instance IP
     def blueInstanceIP = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\\\
+        --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+        """,
+        returnStdout: true
+    ).trim()
+
+    // 4. Get Green Instance IP
+    def greenInstanceIP = sh(
+        script: """
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenTag}" "Name=instance-state-name,Values=running" \\\\
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
         """,
         returnStdout: true
@@ -298,33 +309,62 @@ def deployToBlueInstance(Map config) {
     if (!blueInstanceIP || blueInstanceIP == 'None') {
         error "❌ No running Blue instance found!"
     }
+    if (!greenInstanceIP || greenInstanceIP == 'None') {
+        error "❌ No running Green instance found!"
+    }
+    
     echo "✅ Deploying to Blue instance: ${blueInstanceIP}"
+    echo "✅ Deploying to Green instance: ${greenInstanceIP}"
 
-    // 4. Copy App and Restart Service
+    // 5. Copy App and Restart Service on BOTH instances
     def appFile = config.appFile ?: env.APP_FILE
     def appPath = config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"
     
     // Determine the correct app file based on app name
-    if (appName) {
-        appFile = "app_${appName.replace('app', '')}.py"
+    def sourceFile = ""
+    def destFile = ""
+    
+    if (!appName || appName == "") {
+        sourceFile = "app.py"
+        destFile = "app_default.py"
+    } else if (appName == "app1") {
+        sourceFile = "app_1.py"
+        destFile = "app_app1.py"
+    } else if (appName == "app2") {
+        sourceFile = "app_2.py"
+        destFile = "app_app2.py"
+    } else if (appName == "app3") {
+        sourceFile = "app_3.py"
+        destFile = "app_app3.py"
+    } else {
+        sourceFile = "app.py"
+        destFile = "app_${appName}.py"
     }
     
     sshagent([env.SSH_KEY_ID]) {
-        // Copy the app file and setup script
+        // Copy the app file and setup script to BLUE instance
         sh """
-            scp -o StrictHostKeyChecking=no ${appPath}/${appFile} ec2-user@${blueInstanceIP}:/home/ec2-user/${appFile}
+            scp -o StrictHostKeyChecking=no ${appPath}/${sourceFile} ec2-user@${blueInstanceIP}:/home/ec2-user/${destFile}
             scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${blueInstanceIP}:/home/ec2-user/setup_flask_service.py
             ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'
         """
+        
+        // Copy the app file and setup script to GREEN instance
+        sh """
+            scp -o StrictHostKeyChecking=no ${appPath}/${sourceFile} ec2-user@${greenInstanceIP}:/home/ec2-user/${destFile}
+            scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${greenInstanceIP}:/home/ec2-user/setup_flask_service.py
+            ssh -o StrictHostKeyChecking=no ec2-user@${greenInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'
+        """
     }
     env.BLUE_INSTANCE_IP = blueInstanceIP
+    env.GREEN_INSTANCE_IP = greenInstanceIP
 
-    // 5. Health Check for Blue Instance
+    // 6. Health Check for Blue Instance
     echo "🔍 Monitoring health of Blue instance..."
 
     def blueInstanceId = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\\\
         --query 'Reservations[0].Instances[0].InstanceId' --output text
         """,
         returnStdout: true
@@ -338,10 +378,10 @@ def deployToBlueInstance(Map config) {
         sleep(time: 10, unit: 'SECONDS')
         healthStatus = sh(
             script: """
-            aws elbv2 describe-target-health \\
-            --target-group-arn ${blueTGArn} \\
-            --targets Id=${blueInstanceId} \\
-            --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
+            aws elbv2 describe-target-health \\\\
+            --target-group-arn ${blueTGArn} \\\\
+            --targets Id=${blueInstanceId} \\\\
+            --query 'TargetHealthDescriptions[0].TargetHealth.State' \\\\
             --output text
             """,
             returnStdout: true
