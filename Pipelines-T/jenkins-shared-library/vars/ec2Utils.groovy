@@ -259,9 +259,9 @@ def deployToBlueInstance(Map config) {
     // 1. Dynamically get ALB ARN by ALB name (or partial match)
     def albArn = sh(
         script: """
-        aws elbv2 describe-load-balancers \\\\
-            --names "${config.albName}" \\\\
-            --query 'LoadBalancers[0].LoadBalancerArn' \\\\
+        aws elbv2 describe-load-balancers \\
+            --names "${config.albName}" \\
+            --query 'LoadBalancers[0].LoadBalancerArn' \\
             --output text
         """,
         returnStdout: true
@@ -275,9 +275,9 @@ def deployToBlueInstance(Map config) {
     // 2. Dynamically get Blue Target Group ARN filtered by ALB ARN and TG name/tag
     def blueTGArn = sh(
         script: """
-        aws elbv2 describe-target-groups \\\\
-            --load-balancer-arn ${albArn} \\\\
-            --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" \\\\
+        aws elbv2 describe-target-groups \\
+            --load-balancer-arn ${albArn} \\
+            --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" \\
             --output text
         """,
         returnStdout: true
@@ -291,7 +291,7 @@ def deployToBlueInstance(Map config) {
     // 3. Get Blue Instance IP
     def blueInstanceIP = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\\\
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
         """,
         returnStdout: true
@@ -300,7 +300,7 @@ def deployToBlueInstance(Map config) {
     // 4. Get Green Instance IP
     def greenInstanceIP = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenTag}" "Name=instance-state-name,Values=running" \\\\
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenTag}" "Name=instance-state-name,Values=running" \\
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
         """,
         returnStdout: true
@@ -364,7 +364,7 @@ def deployToBlueInstance(Map config) {
 
     def blueInstanceId = sh(
         script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\\\
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
         --query 'Reservations[0].Instances[0].InstanceId' --output text
         """,
         returnStdout: true
@@ -378,10 +378,10 @@ def deployToBlueInstance(Map config) {
         sleep(time: 10, unit: 'SECONDS')
         healthStatus = sh(
             script: """
-            aws elbv2 describe-target-health \\\\
-            --target-group-arn ${blueTGArn} \\\\
-            --targets Id=${blueInstanceId} \\\\
-            --query 'TargetHealthDescriptions[0].TargetHealth.State' \\\\
+            aws elbv2 describe-target-health \\
+            --target-group-arn ${blueTGArn} \\
+            --targets Id=${blueInstanceId} \\
+            --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
             --output text
             """,
             returnStdout: true
@@ -396,6 +396,7 @@ def deployToBlueInstance(Map config) {
 
     echo "✅ Blue instance is healthy!"
 }
+
 
 
 
