@@ -10,9 +10,13 @@ def call(config) {
         if (config.implementation == 'ec2') {
             echo "Waiting for instances to start and initialize..."
 
-            // Get app name from config or default to empty string
-            def appName = config.appName ?: ""
-            def appFilter = appName ? "Name=tag:App,Values=${appName}" : ""
+            // Require appName to be set to identify instances correctly
+            def appName = config.appName
+            if (!appName) {
+                error "appName must be provided for EC2 deployment to identify blue and green instances."
+            }
+
+            def appFilter = "Name=tag:App,Values=${appName}"
 
             // Get instance IDs with pending or running state
             def instanceIdsRaw = sh(
@@ -38,9 +42,9 @@ def call(config) {
 
             echo "All instances are running."
 
-            // Get Blue and Green instance tags
-            def blueTag = appName ? "${appName}-blue-instance" : "Blue-Instance"
-            def greenTag = appName ? "${appName}-green-instance" : "Green-Instance"
+            // Construct Blue and Green instance tags based on appName
+            def blueTag = "${appName}-blue-instance"
+            def greenTag = "${appName}-green-instance"
 
             // Get Blue and Green instance IPs
             def blueInstanceIP = getInstancePublicIp(blueTag)
@@ -60,10 +64,7 @@ def call(config) {
             def appFiles = []
             def destFiles = []
 
-            if (!appName || appName == "") {
-                appFiles = ["app.py", "app_1.py", "app_2.py", "app_3.py"]
-                destFiles = ["app_default.py", "app_app1.py", "app_app2.py", "app_app3.py"]
-            } else if (appName == "app1") {
+            if (appName == "app1") {
                 appFiles = ["app_1.py"]
                 destFiles = ["app_app1.py"]
             } else if (appName == "app2") {
@@ -73,6 +74,7 @@ def call(config) {
                 appFiles = ["app_3.py"]
                 destFiles = ["app_app3.py"]
             } else {
+                // For any other appName, default to app.py naming convention
                 appFiles = ["app.py"]
                 destFiles = ["app_${appName}.py"]
             }
