@@ -1,3 +1,5 @@
+import groovy.json.JsonSlurper
+
 def call(config) {
     if (env.EXECUTION_TYPE == 'FULL_DEPLOY' || env.EXECUTION_TYPE == 'MANUAL_APPLY') {
         echo "Running Terraform apply"
@@ -10,117 +12,59 @@ def call(config) {
         if (config.implementation == 'ec2') {
             echo "Waiting for instances to start and initialize..."
 
-            // Require appName to be set to identify instances correctly
-            def appName = config.appName
-            if (!appName) {
-                error "appName must be provided for EC2 deployment to identify blue and green instances."
-            }
-
-            def appFilter = "Name=tag:App,Values=${appName}"
-
-            // Get instance IDs with pending or running state
-            def instanceIdsRaw = sh(
+            // Fetch all running instances tagged with Environment=Blue-Green
+            def allInstancesRaw = sh(
                 script: """
                 aws ec2 describe-instances \\
-                --filters "Name=tag:Environment,Values=Blue-Green" ${appFilter} "Name=instance-state-name,Values=pending,running" \\
-                --query 'Reservations[*].Instances[*].InstanceId' \\
-                --output text
+                --filters "Name=tag:Environment,Values=Blue-Green" "Name=instance-state-name,Values=running" \\
+                --query 'Reservations[*].Instances[*].{InstanceId:InstanceId,Tags:Tags}' \\
+                --output json
                 """,
                 returnStdout: true
             ).trim()
 
-            def instanceIds = instanceIdsRaw ? instanceIdsRaw.split("\\s+") : []
+            def jsonSlurper = new JsonSlurper()
+            def instancesJson = jsonSlurper.parseText(allInstancesRaw)
+            def allInstances = instancesJson.flatten()
 
-            if (!instanceIds || instanceIds.length == 0) {
-                error "No instances found with the specified tags!"
+            // Filter out Jenkins instances
+            def filteredInstances = allInstances.findAll { instance ->
+                def isJenkins = instance.Tags.any { tag ->
+                    tag.Key.toLowerCase() in ['name', 'role'] && tag.Value.toLowerCase().contains('jenkins')
+                }
+                return !isJenkins
             }
 
-            // Wait for all instances to be in 'running' state
-            instanceIds.each { instanceId ->
+            def filteredInstanceIds = filteredInstances.collect { it.InstanceId }
+
+            if (!filteredInstanceIds || filteredInstanceIds.size() == 0) {
+                error "No running EC2 instances found excluding Jenkins!"
+            }
+
+            echo "Filtered EC2 instances (excluding Jenkins): ${filteredInstanceIds}"
+
+            // Wait for all filtered instances to be running
+            filteredInstanceIds.each { instanceId ->
                 waitForInstanceRunning(instanceId)
             }
 
-            echo "All instances are running."
+            echo "All filtered instances are running."
 
-            // Construct Blue and Green instance tags based on appName
-            def blueTag = "${appName}-blue-instance"
-            def greenTag = "${appName}-green-instance"
+            // Get appName from config, trim and lowercase for safety
+            def appName = config.appName?.trim()?.toLowerCase()
 
-            // Get Blue and Green instance IPs
-            def blueInstanceIP = getInstancePublicIp(blueTag)
-            def greenInstanceIP = getInstancePublicIp(greenTag)
+            if (!appName) {
+                echo "No appName provided, deploying all three apps (app1, app2, app3) to their respective instances."
 
-            if (!blueInstanceIP || blueInstanceIP == "None") {
-                error "Blue instance IP not found or instance not running!"
-            }
-            if (!greenInstanceIP || greenInstanceIP == "None") {
-                error "Green instance IP not found or instance not running!"
-            }
+                def apps = ["app1", "app2", "app3"]
 
-            echo "Blue Instance IP: ${blueInstanceIP}"
-            echo "Green Instance IP: ${greenInstanceIP}"
-
-            // Determine app files to copy with correct renaming
-            def appFiles = []
-            def destFiles = []
-
-            if (appName == "app1") {
-                appFiles = ["app_1.py"]
-                destFiles = ["app_app1.py"]
-            } else if (appName == "app2") {
-                appFiles = ["app_2.py"]
-                destFiles = ["app_app2.py"]
-            } else if (appName == "app3") {
-                appFiles = ["app_3.py"]
-                destFiles = ["app_app3.py"]
+                apps.each { app ->
+                    deployAppToInstances(app, config)
+                }
             } else {
-                // For any other appName, default to app.py naming convention
-                appFiles = ["app.py"]
-                destFiles = ["app_${appName}.py"]
+                echo "Deploying single app: ${appName}"
+                deployAppToInstances(appName, config)
             }
-
-            def appPath = "${config.tfWorkingDir}/modules/ec2/scripts"
-
-            // Helper closure to copy files and run setup on an instance
-            def deployToInstance = { instanceIP ->
-                sshagent([config.sshKeyId]) {
-                    echo "Deploying to instance ${instanceIP}"
-                    // Copy setup script first
-                    sh "scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${instanceIP}:/home/ec2-user/setup_flask_service.py"
-
-                    // Copy app files
-                    for (int i = 0; i < appFiles.size(); i++) {
-                        sh "scp -o StrictHostKeyChecking=no ${appPath}/${appFiles[i]} ec2-user@${instanceIP}:/home/ec2-user/${destFiles[i]}"
-                    }
-
-                    // Run setup script
-                    sh "ssh -o StrictHostKeyChecking=no ec2-user@${instanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'"
-                }
-            }
-
-            // Deploy in parallel to Blue and Green
-            parallel(
-                Blue: {
-                    deployToInstance(blueInstanceIP)
-                },
-                Green: {
-                    deployToInstance(greenInstanceIP)
-                }
-            )
-
-            // Health check both instances with retries
-            [blueInstanceIP, greenInstanceIP].each { ip ->
-                echo "Checking health for instance ${ip}"
-                try {
-                    sh "curl -m 10 -f http://${ip}/health"
-                    echo "Instance ${ip} is healthy."
-                } catch (Exception e) {
-                    echo "⚠️ Warning: Health check failed for ${ip}: ${e.message}"
-                    echo "The instance may still be initializing. Try accessing it manually in a few minutes."
-                }
-            }
-
-            echo "Deployment to EC2 instances completed."
         } else if (config.implementation == 'ecs') {
             // ECS logic unchanged
             echo "Waiting for ECS services to stabilize..."
@@ -148,6 +92,87 @@ def call(config) {
             """
         }
     }
+}
+
+// Function to deploy a specific app to its Blue and Green instances
+def deployAppToInstances(String appName, Map config) {
+    echo "Starting deployment for app: ${appName}"
+
+    def blueTag = "${appName}-blue-instance"
+    def greenTag = "${appName}-green-instance"
+
+    def blueInstanceIP = getInstancePublicIp(blueTag)
+    def greenInstanceIP = getInstancePublicIp(greenTag)
+
+    if (!blueInstanceIP || blueInstanceIP == "None") {
+        error "Blue instance IP not found or instance not running for ${appName}!"
+    }
+    if (!greenInstanceIP || greenInstanceIP == "None") {
+        error "Green instance IP not found or instance not running for ${appName}!"
+    }
+
+    echo "Blue Instance IP for ${appName}: ${blueInstanceIP}"
+    echo "Green Instance IP for ${appName}: ${greenInstanceIP}"
+
+    // Determine app files and destination names based on appName
+    def appFiles = []
+    def destFiles = []
+
+    switch(appName) {
+        case "app1":
+            appFiles = ["app_1.py"]
+            destFiles = ["app_app1.py"]
+            break
+        case "app2":
+            appFiles = ["app_2.py"]
+            destFiles = ["app_app2.py"]
+            break
+        case "app3":
+            appFiles = ["app_3.py"]
+            destFiles = ["app_app3.py"]
+            break
+        default:
+            appFiles = ["app.py"]
+            destFiles = ["app_${appName}.py"]
+    }
+
+    def appPath = "${config.tfWorkingDir}/modules/ec2/scripts"
+
+    def deployToInstance = { instanceIP ->
+        sshagent([config.sshKeyId]) {
+            echo "Deploying ${appName} to instance ${instanceIP}"
+            sh "scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${instanceIP}:/home/ec2-user/setup_flask_service.py"
+
+            for (int i = 0; i < appFiles.size(); i++) {
+                sh "scp -o StrictHostKeyChecking=no ${appPath}/${appFiles[i]} ec2-user@${instanceIP}:/home/ec2-user/${destFiles[i]}"
+            }
+
+            sh "ssh -o StrictHostKeyChecking=no ec2-user@${instanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'"
+        }
+    }
+
+    parallel(
+        Blue: {
+            deployToInstance(blueInstanceIP)
+        },
+        Green: {
+            deployToInstance(greenInstanceIP)
+        }
+    )
+
+    // Health check both instances
+    [blueInstanceIP, greenInstanceIP].each { ip ->
+        echo "Checking health for instance ${ip} (app: ${appName})"
+        try {
+            sh "curl -m 10 -f http://${ip}/health"
+            echo "Instance ${ip} for ${appName} is healthy."
+        } catch (Exception e) {
+            echo "⚠️ Warning: Health check failed for ${ip} (app: ${appName}): ${e.message}"
+            echo "The instance may still be initializing. Try accessing it manually in a few minutes."
+        }
+    }
+
+    echo "Deployment completed for app: ${appName}"
 }
 
 // Helper function to wait for instance to be running
