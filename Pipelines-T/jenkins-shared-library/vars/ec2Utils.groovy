@@ -246,6 +246,12 @@ def updateApplication(Map config) {
 
 
 def deployToBlueInstance(Map config) {
+    // CRITICAL: Ensure we have the latest code before deploying
+    echo "🔄 Ensuring we have the latest code before deployment..."
+    checkout scmGit(branches: [[name: env.REPO_BRANCH ?: 'main']], 
+                  extensions: [], 
+                  userRemoteConfigs: [[url: env.REPO_URL ?: 'https://github.com/TanishqParab/blue-green-deployment-ecs-test']])
+    
     def appName = config.appName ?: ""
     def blueTargetGroupName = appName ? "blue-tg-${appName}" : (config.blueTargetGroupName ?: "blue-tg")
     def greenTargetGroupName = appName ? "green-tg-${appName}" : (config.greenTargetGroupName ?: "green-tg")
