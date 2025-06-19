@@ -251,110 +251,90 @@ def deployToBlueInstance(Map config) {
     def greenTargetGroupName = appName ? "green-tg-${appName}" : (config.greenTargetGroupName ?: "green-tg")
     def blueTag = appName ? "${appName}-blue-instance" : (config.blueTag ?: "Blue-Instance")
     def greenTag = appName ? "${appName}-green-instance" : (config.greenTag ?: "Green-Instance")
-
+    
     echo "🔍 Using blue target group name: ${blueTargetGroupName}"
     echo "🔍 Using green target group name: ${greenTargetGroupName}"
     echo "🔍 Using blue instance tag: ${blueTag}"
     echo "🔍 Using green instance tag: ${greenTag}"
-
+    
     // 1. Get ALB ARN
-    def albArn = sh(
-        script: """
+    def albArn = sh(script: """
         aws elbv2 describe-load-balancers --names "${config.albName}" --query 'LoadBalancers[0].LoadBalancerArn' --output text
-        """,
-        returnStdout: true
-    ).trim()
-
-    if (!albArn || albArn == 'None') {
-        error "❌ Could not find ALB ARN with name '${config.albName}'"
-    }
+    """, returnStdout: true).trim()
+    if (!albArn || albArn == 'None') error "❌ Could not find ALB ARN with name '${config.albName}'"
     echo "✅ Found ALB ARN: ${albArn}"
-
+    
     // 2. Get Blue and Green Target Group ARNs
-    def blueTGArn = sh(
-        script: """
+    def blueTGArn = sh(script: """
         aws elbv2 describe-target-groups --load-balancer-arn ${albArn} --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" --output text
-        """,
-        returnStdout: true
-    ).trim()
-
-    def greenTGArn = sh(
-        script: """
+    """, returnStdout: true).trim()
+    if (!blueTGArn || blueTGArn == 'None') error "❌ Could not find Blue Target Group ARN"
+    echo "✅ Found Blue Target Group ARN: ${blueTGArn}"
+    
+    def greenTGArn = sh(script: """
         aws elbv2 describe-target-groups --load-balancer-arn ${albArn} --query "TargetGroups[?contains(TargetGroupName, '${greenTargetGroupName}')].TargetGroupArn | [0]" --output text
-        """,
-        returnStdout: true
-    ).trim()
-
-    if (!blueTGArn || blueTGArn == 'None') {
-        error "❌ Could not find Blue Target Group ARN"
-    }
-    if (!greenTGArn || greenTGArn == 'None') {
-        error "❌ Could not find Green Target Group ARN"
-    }
-    echo "✅ Found Blue TG ARN: ${blueTGArn}"
-    echo "✅ Found Green TG ARN: ${greenTGArn}"
-
-    // 3. Get Blue and Green Instance IDs and IPs
-    def blueInstanceId = getInstanceIdByTag(blueTag)
-    def greenInstanceId = getInstanceIdByTag(greenTag)
-
-    def blueInstanceIP = getInstancePublicIp(blueTag)
-    def greenInstanceIP = getInstancePublicIp(greenTag)
-
-    if (!blueInstanceId || blueInstanceId == 'None') {
+    """, returnStdout: true).trim()
+    if (!greenTGArn || greenTGArn == 'None') error "❌ Could not find Green Target Group ARN"
+    echo "✅ Found Green Target Group ARN: ${greenTGArn}"
+    
+    // 3. Get instance IDs and IPs
+    def blueInstanceId = sh(script: """
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].InstanceId' --output text
+    """, returnStdout: true).trim()
+    def blueInstanceIP = sh(script: """
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+    """, returnStdout: true).trim()
+    
+    def greenInstanceId = sh(script: """
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenTag}" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].InstanceId' --output text
+    """, returnStdout: true).trim()
+    def greenInstanceIP = sh(script: """
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenTag}" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+    """, returnStdout: true).trim()
+    
+    if (!blueInstanceId || blueInstanceId == 'None' || !blueInstanceIP || blueInstanceIP == 'None') {
         error "❌ No running Blue instance found!"
     }
-    if (!greenInstanceId || greenInstanceId == 'None') {
+    if (!greenInstanceId || greenInstanceId == 'None' || !greenInstanceIP || greenInstanceIP == 'None') {
         error "❌ No running Green instance found!"
     }
-
-    echo "Blue Instance ID: ${blueInstanceId}, IP: ${blueInstanceIP}"
-    echo "Green Instance ID: ${greenInstanceId}, IP: ${greenInstanceIP}"
-
-    // 4. Determine active and idle environments by health status
-    def blueHealth = getTargetHealth(blueTGArn, blueInstanceId)
-    def greenHealth = getTargetHealth(greenTGArn, greenInstanceId)
-
-    echo "Blue instance health: ${blueHealth}"
-    echo "Green instance health: ${greenHealth}"
-
-    def activeEnv = null
-    def idleEnv = null
-    def idleInstanceIP = null
-    def idleInstanceId = null
-    def idleTGArn = null
-
-    if (blueHealth == 'healthy' && greenHealth != 'healthy') {
-        activeEnv = "blue"
-        idleEnv = "green"
+    
+    // 4. Determine active target group by checking which has healthy targets
+    def blueHealth = sh(script: """
+        aws elbv2 describe-target-health --target-group-arn ${blueTGArn} --query 'TargetHealthDescriptions[0].TargetHealth.State' --output text
+    """, returnStdout: true).trim()
+    def greenHealth = sh(script: """
+        aws elbv2 describe-target-health --target-group-arn ${greenTGArn} --query 'TargetHealthDescriptions[0].TargetHealth.State' --output text
+    """, returnStdout: true).trim()
+    
+    echo "Blue target group health: ${blueHealth}"
+    echo "Green target group health: ${greenHealth}"
+    
+    def idleInstanceIP
+    def idleInstanceId
+    def idleTag
+    def idleTGArn
+    
+    if (blueHealth == 'healthy') {
+        echo "Blue target group is active; deploying to Green (idle) instance."
         idleInstanceIP = greenInstanceIP
         idleInstanceId = greenInstanceId
+        idleTag = greenTag
         idleTGArn = greenTGArn
-    } else if (greenHealth == 'healthy' && blueHealth != 'healthy') {
-        activeEnv = "green"
-        idleEnv = "blue"
+    } else if (greenHealth == 'healthy') {
+        echo "Green target group is active; deploying to Blue (idle) instance."
         idleInstanceIP = blueInstanceIP
         idleInstanceId = blueInstanceId
+        idleTag = blueTag
         idleTGArn = blueTGArn
-    } else if (blueHealth == 'healthy' && greenHealth == 'healthy') {
-        // Both healthy, choose green as idle by default
-        activeEnv = "blue"
-        idleEnv = "green"
-        idleInstanceIP = greenInstanceIP
-        idleInstanceId = greenInstanceId
-        idleTGArn = greenTGArn
     } else {
-        error "❌ Could not determine active environment or both are unhealthy!"
+        error "❌ Neither Blue nor Green target groups have healthy targets!"
     }
-
-    echo "Active environment: ${activeEnv}"
-    echo "Idle environment: ${idleEnv}"
-    echo "Deploying to idle instance IP: ${idleInstanceIP}"
-
-    // 5. Determine source and destination app files
+    
+    // 5. Determine the correct app file based on app name (matching your terraform apply naming)
     def sourceFile = ""
     def destFile = ""
-
+    
     if (!appName || appName == "") {
         sourceFile = "app.py"
         destFile = "app_default.py"
@@ -371,93 +351,51 @@ def deployToBlueInstance(Map config) {
         sourceFile = "app.py"
         destFile = "app_${appName}.py"
     }
-
-    def appPath = config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"
-
-    // 6. Deploy to idle instance only
+    
+    // 6. Clean up old app files on idle instance before copying new files
     sshagent([env.SSH_KEY_ID]) {
-        echo "Deploying app to idle instance (${idleEnv}): ${idleInstanceIP}"
+        echo "Cleaning up old app files on idle instance ${idleInstanceIP} (${idleTag})"
+        sh "ssh -o StrictHostKeyChecking=no ec2-user@${idleInstanceIP} 'rm -f /home/ec2-user/app_*.py /home/ec2-user/app_app*.py'"
+        
+        echo "Deploying app to idle instance ${idleInstanceIP} (${idleTag})"
         sh """
-            scp -o StrictHostKeyChecking=no ${appPath}/${sourceFile} ec2-user@${idleInstanceIP}:/home/ec2-user/${destFile}
-            scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${idleInstanceIP}:/home/ec2-user/setup_flask_service.py
+            scp -o StrictHostKeyChecking=no ${config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"}/${sourceFile} ec2-user@${idleInstanceIP}:/home/ec2-user/${destFile}
+            scp -o StrictHostKeyChecking=no ${config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"}/setup_flask_service.py ec2-user@${idleInstanceIP}:/home/ec2-user/setup_flask_service.py
             ssh -o StrictHostKeyChecking=no ec2-user@${idleInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'
         """
     }
-
-    // 7. Health check for idle instance
-    waitForTargetHealthy(idleTGArn, idleInstanceId, idleEnv.capitalize())
-
-    // Optionally, set environment variables for downstream steps
-    env.IDLE_INSTANCE_IP = idleInstanceIP
-    env.IDLE_INSTANCE_ID = idleInstanceId
-    env.IDLE_ENVIRONMENT = idleEnv
-    env.ACTIVE_ENVIRONMENT = activeEnv
-}
-
-// Helper functions (reuse your existing ones)
-
-def getInstancePublicIp(String tagName) {
-    return sh(
-        script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${tagName}" "Name=instance-state-name,Values=running" \\
-        --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
-        """,
-        returnStdout: true
-    ).trim()
-}
-
-def getInstanceIdByTag(String tagName) {
-    return sh(
-        script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${tagName}" "Name=instance-state-name,Values=running" \\
-        --query 'Reservations[0].Instances[0].InstanceId' --output text
-        """,
-        returnStdout: true
-    ).trim()
-}
-
-def getTargetHealth(String targetGroupArn, String instanceId) {
-    return sh(
-        script: """
-        aws elbv2 describe-target-health \\
-        --target-group-arn ${targetGroupArn} \\
-        --targets Id=${instanceId} \\
-        --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
-        --output text
-        """,
-        returnStdout: true
-    ).trim()
-}
-
-def waitForTargetHealthy(String targetGroupArn, String instanceId, String instanceName) {
-    echo "🔍 Waiting for ${instanceName} instance (${instanceId}) to become healthy in target group..."
-
+    
+    // 7. Health check the idle instance
+    echo "🔍 Monitoring health of idle instance..."
     def healthStatus = ''
     def attempts = 0
     def maxAttempts = 30
-
+    
     while (healthStatus != 'healthy' && attempts < maxAttempts) {
         sleep(time: 10, unit: 'SECONDS')
         healthStatus = sh(
             script: """
             aws elbv2 describe-target-health \\
-            --target-group-arn ${targetGroupArn} \\
-            --targets Id=${instanceId} \\
+            --target-group-arn ${idleTGArn} \\
+            --targets Id=${idleInstanceId} \\
             --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
             --output text
             """,
             returnStdout: true
         ).trim()
         attempts++
-        echo "Health check attempt ${attempts} for ${instanceName}: ${healthStatus}"
+        echo "Health status check attempt ${attempts}: ${healthStatus}"
     }
-
+    
     if (healthStatus != 'healthy') {
-        error "❌ ${instanceName} instance failed to become healthy after ${maxAttempts} attempts!"
+        error "❌ Idle instance failed to become healthy after ${maxAttempts} attempts!"
     }
-
-    echo "✅ ${instanceName} instance is healthy!"
+    
+    echo "✅ Idle instance is healthy and ready for traffic switch."
+    
+    // Note: Traffic switch logic should be handled separately after this deployment.
 }
+
 
 
 
