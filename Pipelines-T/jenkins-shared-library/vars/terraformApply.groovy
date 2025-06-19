@@ -19,120 +19,22 @@ def call(config) {
             --output table
             """
 
-            // Get app name from config or default to empty string
-            def appName = config.appName ?: ""
-            def appFilter = appName ? "Name=tag:App,Values=${appName}" : ""
+            def validApps = ["app1", "app2", "app3"]
+            def appName = config.appName?.trim()?.toLowerCase()
 
-            def instances = sh(
-                script: """
-                aws ec2 describe-instances \\
-                --filters "Name=tag:Environment,Values=Blue-Green" ${appFilter} "Name=instance-state-name,Values=running" \\
-                --query 'Reservations[*].Instances[*].PublicIpAddress' \\
-                --output text
-                """,
-                returnStdout: true
-            ).trim()
-
-            if (!instances) {
-                error "No running instances found! Check AWS console and tagging."
-            }
-
-            def instanceList = instances.split("\n")
-
-            // Construct blue and green instance tags based on appName
-            def blueTag = appName ? "${appName}-blue-instance" : "Blue-Instance"
-            def greenTag = appName ? "${appName}-green-instance" : "Green-Instance"
-
-            // Get blue and green instance IPs
-            def blueInstanceIP = sh(
-                script: """
-                aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
-                --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
-                """,
-                returnStdout: true
-            ).trim()
-
-            def greenInstanceIP = sh(
-                script: """
-                aws ec2 describe-instances --filters "Name=tag:Name,Values=${greenTag}" "Name=instance-state-name,Values=running" \\
-                --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
-                """,
-                returnStdout: true
-            ).trim()
-
-            // Determine app files and destination names with latest naming conventions
-            def appFiles = []
-            def destFiles = []
-
-            if (!appName || appName == "") {
-                // Copy all app files with correct destination names
-                appFiles = ["app_1.py", "app_2.py", "app_3.py"]
-                destFiles = ["app_app1.py", "app_app2.py", "app_app3.py"]
-            } else if (appName == "app1") {
-                appFiles = ["app_1.py"]
-                destFiles = ["app_app1.py"]
-            } else if (appName == "app2") {
-                appFiles = ["app_2.py"]
-                destFiles = ["app_app2.py"]
-            } else if (appName == "app3") {
-                appFiles = ["app_3.py"]
-                destFiles = ["app_app3.py"]
+            if (!appName) {
+                echo "No appName provided, deploying all apps: ${validApps.join(', ')}"
+                validApps.each { app ->
+                    deployApp(app, config)
+                }
+            } else if (!validApps.contains(appName)) {
+                error "Invalid appName '${appName}'. Must be one of: ${validApps.join(', ')}"
             } else {
-                // For any other appName, fallback to app.py naming
-                appFiles = ["app.py"]
-                destFiles = ["app_${appName}.py"]
-            }
-
-            def appPath = "${config.tfWorkingDir}/modules/ec2/scripts"
-
-            // Helper closure to deploy to an instance
-            def deployToInstance = { instanceIP ->
-                sshagent([config.sshKeyId]) {
-                    echo "Deploying to instance ${instanceIP}"
-
-                    // Copy setup script first
-                    sh "scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${instanceIP}:/home/ec2-user/setup_flask_service.py"
-
-                    // Copy each app file with correct destination name
-                    for (int i = 0; i < appFiles.size(); i++) {
-                        sh "scp -o StrictHostKeyChecking=no ${appPath}/${appFiles[i]} ec2-user@${instanceIP}:/home/ec2-user/${destFiles[i]}"
-                    }
-
-                    // Run setup script to stop old app and start new one
-                    sh "ssh -o StrictHostKeyChecking=no ec2-user@${instanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'"
-                }
-            }
-
-            // Deploy in parallel to Blue and Green instances
-            parallel(
-                Blue: {
-                    if (blueInstanceIP && blueInstanceIP != "None") {
-                        deployToInstance(blueInstanceIP)
-                    } else {
-                        error "Blue instance IP not found or invalid!"
-                    }
-                },
-                Green: {
-                    if (greenInstanceIP && greenInstanceIP != "None") {
-                        deployToInstance(greenInstanceIP)
-                    } else {
-                        error "Green instance IP not found or invalid!"
-                    }
-                }
-            )
-
-            // Health check all instances in the list
-            instanceList.each { instanceIP ->
-                echo "Checking health for instance ${instanceIP}"
-                try {
-                    sh "curl -m 10 -f http://${instanceIP}/health"
-                    echo "Instance ${instanceIP} is healthy."
-                } catch (Exception e) {
-                    echo "⚠️ Warning: Health check failed for ${instanceIP}: ${e.message}"
-                    echo "The instance may still be initializing. Try accessing it manually in a few minutes."
-                }
+                echo "Deploying single app: ${appName}"
+                deployApp(appName, config)
             }
         } else if (config.implementation == 'ecs') {
+            // ECS logic unchanged
             echo "Waiting for ECS services to stabilize..."
             sleep(60)
 
@@ -158,4 +60,93 @@ def call(config) {
             """
         }
     }
+}
+
+def deployApp(String appName, Map config) {
+    echo "Starting deployment for app: ${appName}"
+
+    def blueTag = "${appName}-blue-instance"
+    def greenTag = "${appName}-green-instance"
+
+    def blueInstanceIP = getInstancePublicIp(blueTag)
+    def greenInstanceIP = getInstancePublicIp(greenTag)
+
+    if (!blueInstanceIP || blueInstanceIP == "None") {
+        error "Blue instance IP not found or invalid for ${appName}!"
+    }
+    if (!greenInstanceIP || greenInstanceIP == "None") {
+        error "Green instance IP not found or invalid for ${appName}!"
+    }
+
+    echo "Blue Instance IP for ${appName}: ${blueInstanceIP}"
+    echo "Green Instance IP for ${appName}: ${greenInstanceIP}"
+
+    def appFiles = []
+    def destFiles = []
+
+    switch(appName) {
+        case "app1":
+            appFiles = ["app_1.py"]
+            destFiles = ["app_app1.py"]
+            break
+        case "app2":
+            appFiles = ["app_2.py"]
+            destFiles = ["app_app2.py"]
+            break
+        case "app3":
+            appFiles = ["app_3.py"]
+            destFiles = ["app_app3.py"]
+            break
+        default:
+            appFiles = ["app.py"]
+            destFiles = ["app_${appName}.py"]
+    }
+
+    def appPath = "${config.tfWorkingDir}/modules/ec2/scripts"
+
+    def deployToInstance = { instanceIP ->
+        sshagent([config.sshKeyId]) {
+            echo "Deploying ${appName} to instance ${instanceIP}"
+            sh "scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${instanceIP}:/home/ec2-user/setup_flask_service.py"
+
+            for (int i = 0; i < appFiles.size(); i++) {
+                sh "scp -o StrictHostKeyChecking=no ${appPath}/${appFiles[i]} ec2-user@${instanceIP}:/home/ec2-user/${destFiles[i]}"
+            }
+
+            sh "ssh -o StrictHostKeyChecking=no ec2-user@${instanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'"
+        }
+    }
+
+    parallel(
+        Blue: {
+            deployToInstance(blueInstanceIP)
+        },
+        Green: {
+            deployToInstance(greenInstanceIP)
+        }
+    )
+
+    // Health check both instances
+    [blueInstanceIP, greenInstanceIP].each { ip ->
+        echo "Checking health for instance ${ip} (app: ${appName})"
+        try {
+            sh "curl -m 10 -f http://${ip}/health"
+            echo "Instance ${ip} for ${appName} is healthy."
+        } catch (Exception e) {
+            echo "⚠️ Warning: Health check failed for ${ip} (app: ${appName}): ${e.message}"
+            echo "The instance may still be initializing. Try accessing it manually in a few minutes."
+        }
+    }
+
+    echo "Deployment completed for app: ${appName}"
+}
+
+def getInstancePublicIp(String tagName) {
+    return sh(
+        script: """
+        aws ec2 describe-instances --filters "Name=tag:Name,Values=${tagName}" "Name=instance-state-name,Values=running" \\
+        --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
+        """,
+        returnStdout: true
+    ).trim()
 }
