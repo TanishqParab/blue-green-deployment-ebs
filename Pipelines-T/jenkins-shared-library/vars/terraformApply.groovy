@@ -15,7 +15,7 @@ def call(config) {
             def appFilter = appName ? "Name=tag:App,Values=${appName}" : ""
 
             // Get instance IDs with pending or running state
-            def instanceIds = sh(
+            def instanceIdsRaw = sh(
                 script: """
                 aws ec2 describe-instances \\
                 --filters "Name=tag:Environment,Values=Blue-Green" ${appFilter} "Name=instance-state-name,Values=pending,running" \\
@@ -23,9 +23,11 @@ def call(config) {
                 --output text
                 """,
                 returnStdout: true
-            ).trim().split("\\s+")
+            ).trim()
 
-            if (!instanceIds || instanceIds.isEmpty()) {
+            def instanceIds = instanceIdsRaw ? instanceIdsRaw.split("\\s+") : []
+
+            if (!instanceIds || instanceIds.length == 0) {
                 error "No instances found with the specified tags!"
             }
 
