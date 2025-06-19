@@ -345,7 +345,7 @@ def deployToBlueInstance(Map config) {
         def currentCommit = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
         echo "✅ Using commit: ${currentCommit}"
         
-        // 5. Determine the correct app file based on app name
+        // 5. Determine the correct app file based on app name - UPDATED NAMING
         def sourceFile = ""
         def destFile = ""
         
@@ -354,13 +354,13 @@ def deployToBlueInstance(Map config) {
             destFile = "app_default.py"
         } else if (appName == "app1") {
             sourceFile = "app_1.py"
-            destFile = "app_app1.py"
+            destFile = "app_app_1.py"  // Updated naming
         } else if (appName == "app2") {
             sourceFile = "app_2.py"
-            destFile = "app_app2.py"
+            destFile = "app_app_2.py"  // Updated naming
         } else if (appName == "app3") {
             sourceFile = "app_3.py"
-            destFile = "app_app3.py"
+            destFile = "app_app_3.py"  // Updated naming
         } else {
             sourceFile = "app.py"
             destFile = "app_${appName}.py"
@@ -427,7 +427,6 @@ def deployToBlueInstance(Map config) {
     echo "✅ Idle instance is healthy and ready for traffic switch."
     echo "📝 Active instance retains previous version for rollback capability."
 }
-
 
 
 
