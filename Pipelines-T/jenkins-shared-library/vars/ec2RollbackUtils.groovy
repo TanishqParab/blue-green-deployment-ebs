@@ -1,14 +1,15 @@
-// vars/ec2RollbackUtils.groovy
-
 def fetchResources(Map config) {
     echo "🔄 Fetching EC2 ALB and target group resources..."
-    
-    // Get app name from config or default to empty string (for backward compatibility)
-    def appName = config.appName ?: ""
+
+    def appName = config.appName
+    if (!appName) {
+        error "❌ APP_NAME not provided. Rollback requires a specific application name like 'app1'."
+    }
+
     def albName = config.albName ?: "blue-green-alb"
-    def blueTgName = appName ? "blue-tg-${appName}" : "blue-tg"
-    def greenTgName = appName ? "green-tg-${appName}" : "green-tg"
-    
+    def blueTgName = "blue-tg-${appName}"
+    def greenTgName = "green-tg-${appName}"
+
     echo "🔍 Using ALB name: ${albName}"
     echo "🔍 Using target groups: ${blueTgName} and ${greenTgName}"
 
@@ -58,16 +59,17 @@ def fetchResources(Map config) {
     }
 }
 
-
 def prepareRollback(Map config) {
     echo "🛠️ Creating rollback traffic rule..."
-    
-    // Get app name from config or default to empty string (for backward compatibility)
-    def appName = config.appName ?: ""
-    def blueInstanceTag = appName ? "${appName}-blue-instance" : "Blue-Instance"
-    
+
+    def appName = config.appName
+    if (!appName) {
+        error "❌ APP_NAME not provided. Rollback requires a specific application name like 'app1'."
+    }
+
+    def blueInstanceTag = "${appName}-blue-instance"
     echo "🔍 Using blue instance tag: ${blueInstanceTag}"
-    
+
     try {
         sh """
             aws elbv2 create-rule \\
@@ -100,7 +102,7 @@ def prepareRollback(Map config) {
         echo "⚠️ No target instance IDs found. Attempting to proceed with rollback anyway."
         return
     }
-    
+
     def instanceIds = targetInstanceIds.join(' ')
 
     def instanceDetails
@@ -187,6 +189,3 @@ def prepareRollback(Map config) {
 def executeEc2Rollback(Map config) {
     echo "✅✅✅ EC2 ROLLBACK COMPLETE: Traffic now routed to previous version (GREEN-TG)"
 }
-
-
-
