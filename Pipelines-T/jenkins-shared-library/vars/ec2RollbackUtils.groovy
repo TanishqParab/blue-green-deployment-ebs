@@ -193,11 +193,14 @@ def prepareRollback(Map config) {
 
     // Upload latest setup_flask_service_switch.py before rollback
     sshagent([env.SSH_KEY_ID]) {
-        def localScript = "${env.TF_WORKING_DIR}/modules/ec2/scripts/setup_flask_service_switch.py"
+        def tfDir = env.TF_WORKING_DIR ?: "blue-green-deployment-ecs-test/blue-green-deployment"
+        def localScript = "${tfDir}/modules/ec2/scripts/setup_flask_service_switch.py"
+
         if (!fileExists(localScript)) {
             error "❌ Local rollback script not found: ${localScript}"
         }
 
+        echo "📤 Uploading rollback script..."
         sh """
             scp -o StrictHostKeyChecking=no ${localScript} ec2-user@${standbyIp}:/home/ec2-user/setup_flask_service_switch.py
         """
@@ -210,6 +213,7 @@ def prepareRollback(Map config) {
             error "❌ Remote rollback script not found on instance. SCP may have failed."
         }
 
+        echo "🔒 Making script executable..."
         sh """
             ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'chmod +x /home/ec2-user/setup_flask_service_switch.py'
         """
