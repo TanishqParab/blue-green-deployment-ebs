@@ -68,52 +68,58 @@ def prepareRollback(Map config) {
         error "❌ APP_NAME not provided. Rollback requires a specific application name like 'app1'."
     }
 
-    def pathPattern = "/${appName}"
     def blueInstanceTag = "${appName}-blue-instance"
+    def rollbackPath = "/${appName}"
+
     echo "🔍 Using blue instance tag: ${blueInstanceTag}"
+    echo "🔍 Looking for rule with path-pattern: ${rollbackPath}"
 
     try {
-        // Check if rule for path already exists
-        def existingRuleArn = sh(script: """
-            aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \
-            --query "Rules[?Conditions[?Field=='path-pattern' && Values[0]=='${pathPattern}']].RuleArn" \
-            --output text
+        // Fetch rule ARN for the current app path
+        def ruleArn = sh(script: """
+            aws elbv2 describe-rules \\
+                --listener-arn ${env.LISTENER_ARN} \\
+                --query "Rules[?Conditions[?Field=='path-pattern' && Values[0]=='${rollbackPath}']].RuleArn" \\
+                --output text
         """, returnStdout: true).trim()
 
-        if (existingRuleArn && existingRuleArn != "None") {
-            echo "🔁 Existing rule found for path '${pathPattern}', modifying to point to GREEN TG"
+        if (ruleArn && ruleArn != "None") {
+            echo "✅ Found rule for path ${rollbackPath}: ${ruleArn}"
             sh """
-                aws elbv2 modify-rule \
-                    --rule-arn ${existingRuleArn} \
+                aws elbv2 modify-rule \\
+                    --rule-arn ${ruleArn} \\
                     --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
             """
         } else {
-            echo "➕ No rule found for '${pathPattern}', creating new rule at next priority"
+            echo "⚠️ Rule for path '${rollbackPath}' not found. Creating new rule..."
 
-            def maxPriority = sh(script: """
-                aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \
-                --query 'Rules[?Priority!=`default`].[Priority]' --output text | sort -n | tail -n 1
+            // Fetch all existing priorities and find max
+            def prioritiesRaw = sh(script: """
+                aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \\
+                --query "Rules[*].Priority" --output text
             """, returnStdout: true).trim()
 
-            def newPriority = (maxPriority.toInteger() + 1).toString()
-            echo "➡️ Using priority ${newPriority} for new rule"
+            def priorities = prioritiesRaw.tokenize('\n').findAll { it != 'default' }.collect { it as int }
+            def nextPriority = (priorities.max() ?: 1) + 1
 
+            echo "🆕 Creating rule with priority: ${nextPriority}"
             sh """
-                aws elbv2 create-rule \
-                    --listener-arn ${env.LISTENER_ARN} \
-                    --priority ${newPriority} \
-                    --conditions Field=path-pattern,Values='${pathPattern}' \
+                aws elbv2 create-rule \\
+                    --listener-arn ${env.LISTENER_ARN} \\
+                    --priority ${nextPriority} \\
+                    --conditions Field=path-pattern,Values='${rollbackPath}' \\
                     --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
             """
         }
     } catch (Exception e) {
-        echo "⚠️ Warning: Failed to create/modify rule: ${e.message}"
+        echo "⚠️ Error managing listener rule: ${e.message}"
+        echo "⚠️ Attempting to proceed with rollback anyway."
     }
 
     def targetHealthData = sh(script: """
-        aws elbv2 describe-target-health \
-            --target-group-arn ${env.GREEN_TG_ARN} \
-            --query 'TargetHealthDescriptions[*].[Target.Id, TargetHealth.State]' \
+        aws elbv2 describe-target-health \\
+            --target-group-arn ${env.GREEN_TG_ARN} \\
+            --query 'TargetHealthDescriptions[*].[Target.Id, TargetHealth.State]' \\
             --output text
     """, returnStdout: true).trim()
 
@@ -135,9 +141,9 @@ def prepareRollback(Map config) {
     def instanceDetails
     try {
         instanceDetails = sh(script: '''
-            aws ec2 describe-instances \
-                --instance-ids ''' + instanceIds + ''' \
-                --query "Reservations[*].Instances[*].[InstanceId, Tags[?Key=='Name']|[0].Value]" \
+            aws ec2 describe-instances \\
+                --instance-ids ''' + instanceIds + ''' \\
+                --query "Reservations[*].Instances[*].[InstanceId, Tags[?Key=='Name']|[0].Value]" \\
                 --output text
         ''', returnStdout: true).trim()
     } catch (Exception e) {
@@ -177,10 +183,10 @@ def prepareRollback(Map config) {
         attempts++
 
         healthState = sh(script: """
-            aws elbv2 describe-target-health \
-                --target-group-arn ${env.GREEN_TG_ARN} \
-                --targets Id=${env.STANDBY_INSTANCE} \
-                --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+            aws elbv2 describe-target-health \\
+                --target-group-arn ${env.GREEN_TG_ARN} \\
+                --targets Id=${env.STANDBY_INSTANCE} \\
+                --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
                 --output text
         """, returnStdout: true).trim()
 
@@ -192,12 +198,12 @@ def prepareRollback(Map config) {
             echo "⚠️ Triggering health check reevaluation"
             try {
                 sh """
-                    aws elbv2 deregister-targets \
-                        --target-group-arn ${env.GREEN_TG_ARN} \
+                    aws elbv2 deregister-targets \\
+                        --target-group-arn ${env.GREEN_TG_ARN} \\
                         --targets Id=${env.STANDBY_INSTANCE}
-                    sleep 15 
-                    aws elbv2 register-targets \
-                        --target-group-arn ${env.GREEN_TG_ARN} \
+                    sleep 15
+                    aws elbv2 register-targets \\
+                        --target-group-arn ${env.GREEN_TG_ARN} \\
                         --targets Id=${env.STANDBY_INSTANCE}
                     sleep 10
                 """
