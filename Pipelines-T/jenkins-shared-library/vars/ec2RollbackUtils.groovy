@@ -59,7 +59,6 @@ def fetchResources(Map config) {
     }
 }
 
-
 def prepareRollback(Map config) {
     echo "🛠️ Creating rollback traffic rule..."
 
@@ -75,7 +74,6 @@ def prepareRollback(Map config) {
     echo "🔍 Looking for rule with path-pattern: ${rollbackPath}"
 
     try {
-        // Fetch rule ARN for the current app path
         def ruleArn = sh(script: """
             aws elbv2 describe-rules \\
                 --listener-arn ${env.LISTENER_ARN} \\
@@ -93,14 +91,17 @@ def prepareRollback(Map config) {
         } else {
             echo "⚠️ Rule for path '${rollbackPath}' not found. Creating new rule..."
 
-            // Fetch all existing priorities and find max
             def prioritiesRaw = sh(script: """
                 aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \\
                 --query "Rules[*].Priority" --output text
             """, returnStdout: true).trim()
 
-            def priorities = prioritiesRaw.tokenize('\n').findAll { it != 'default' }.collect { it as int }
-            def nextPriority = (priorities.max() ?: 1) + 1
+            def priorities = prioritiesRaw
+                .tokenize('\t\n ')
+                .findAll { it != 'default' && it.isInteger() }
+                .collect { it.toInteger() }
+
+            def nextPriority = (priorities?.max() ?: 1) + 1
 
             echo "🆕 Creating rule with priority: ${nextPriority}"
             sh """
@@ -137,8 +138,8 @@ def prepareRollback(Map config) {
     }
 
     def instanceIds = targetInstanceIds.join(' ')
-
     def instanceDetails
+
     try {
         instanceDetails = sh(script: '''
             aws ec2 describe-instances \\
@@ -163,7 +164,7 @@ def prepareRollback(Map config) {
         return
     }
 
-    def (blueInstanceId, instanceName) = blueLine.split('\t')
+    def (blueInstanceId, _) = blueLine.split('\t')
     def healthState = targetHealthData.readLines().find { it.startsWith(blueInstanceId) }?.split()[1]
 
     if (!healthState) {
@@ -217,7 +218,6 @@ def prepareRollback(Map config) {
         echo "⚠️ Warning: Standby instance did not become healthy (Final state: ${healthState}). Attempting to proceed with rollback anyway."
     }
 }
-
 
 def executeEc2Rollback(Map config) {
     echo "✅✅✅ EC2 ROLLBACK COMPLETE: Traffic now routed to previous version (GREEN-TG)"
