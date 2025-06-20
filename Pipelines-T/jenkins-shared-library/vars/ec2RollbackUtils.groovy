@@ -59,6 +59,7 @@ def fetchResources(Map config) {
     }
 }
 
+
 def prepareRollback(Map config) {
     echo "🛠️ Creating rollback traffic rule..."
 
@@ -67,26 +68,52 @@ def prepareRollback(Map config) {
         error "❌ APP_NAME not provided. Rollback requires a specific application name like 'app1'."
     }
 
+    def pathPattern = "/${appName}"
     def blueInstanceTag = "${appName}-blue-instance"
     echo "🔍 Using blue instance tag: ${blueInstanceTag}"
 
     try {
-        sh """
-            aws elbv2 create-rule \\
-                --listener-arn ${env.LISTENER_ARN} \\
-                --priority 10 \\
-                --conditions Field=path-pattern,Values='/*' \\
-                --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
-        """
+        // Check if rule for path already exists
+        def existingRuleArn = sh(script: """
+            aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \
+            --query "Rules[?Conditions[?Field=='path-pattern' && Values[0]=='${pathPattern}']].RuleArn" \
+            --output text
+        """, returnStdout: true).trim()
+
+        if (existingRuleArn && existingRuleArn != "None") {
+            echo "🔁 Existing rule found for path '${pathPattern}', modifying to point to GREEN TG"
+            sh """
+                aws elbv2 modify-rule \
+                    --rule-arn ${existingRuleArn} \
+                    --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
+            """
+        } else {
+            echo "➕ No rule found for '${pathPattern}', creating new rule at next priority"
+
+            def maxPriority = sh(script: """
+                aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \
+                --query 'Rules[?Priority!=`default`].[Priority]' --output text | sort -n | tail -n 1
+            """, returnStdout: true).trim()
+
+            def newPriority = (maxPriority.toInteger() + 1).toString()
+            echo "➡️ Using priority ${newPriority} for new rule"
+
+            sh """
+                aws elbv2 create-rule \
+                    --listener-arn ${env.LISTENER_ARN} \
+                    --priority ${newPriority} \
+                    --conditions Field=path-pattern,Values='${pathPattern}' \
+                    --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
+            """
+        }
     } catch (Exception e) {
-        echo "⚠️ Warning: Could not create rule: ${e.message}"
-        echo "⚠️ A rule with priority 10 might already exist. Continuing with rollback."
+        echo "⚠️ Warning: Failed to create/modify rule: ${e.message}"
     }
 
     def targetHealthData = sh(script: """
-        aws elbv2 describe-target-health \\
-            --target-group-arn ${env.GREEN_TG_ARN} \\
-            --query 'TargetHealthDescriptions[*].[Target.Id, TargetHealth.State]' \\
+        aws elbv2 describe-target-health \
+            --target-group-arn ${env.GREEN_TG_ARN} \
+            --query 'TargetHealthDescriptions[*].[Target.Id, TargetHealth.State]' \
             --output text
     """, returnStdout: true).trim()
 
@@ -108,14 +135,13 @@ def prepareRollback(Map config) {
     def instanceDetails
     try {
         instanceDetails = sh(script: '''
-            aws ec2 describe-instances \\
-                --instance-ids ''' + instanceIds + ''' \\
-                --query "Reservations[*].Instances[*].[InstanceId, Tags[?Key=='Name']|[0].Value]" \\
+            aws ec2 describe-instances \
+                --instance-ids ''' + instanceIds + ''' \
+                --query "Reservations[*].Instances[*].[InstanceId, Tags[?Key=='Name']|[0].Value]" \
                 --output text
         ''', returnStdout: true).trim()
     } catch (Exception e) {
         echo "⚠️ Warning: Could not fetch instance details: ${e.message}"
-        echo "⚠️ Attempting to proceed with rollback anyway."
         return
     }
 
@@ -151,10 +177,10 @@ def prepareRollback(Map config) {
         attempts++
 
         healthState = sh(script: """
-            aws elbv2 describe-target-health \\
-                --target-group-arn ${env.GREEN_TG_ARN} \\
-                --targets Id=${env.STANDBY_INSTANCE} \\
-                --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
+            aws elbv2 describe-target-health \
+                --target-group-arn ${env.GREEN_TG_ARN} \
+                --targets Id=${env.STANDBY_INSTANCE} \
+                --query 'TargetHealthDescriptions[0].TargetHealth.State' \
                 --output text
         """, returnStdout: true).trim()
 
@@ -166,12 +192,12 @@ def prepareRollback(Map config) {
             echo "⚠️ Triggering health check reevaluation"
             try {
                 sh """
-                    aws elbv2 deregister-targets \\
-                        --target-group-arn ${env.GREEN_TG_ARN} \\
+                    aws elbv2 deregister-targets \
+                        --target-group-arn ${env.GREEN_TG_ARN} \
                         --targets Id=${env.STANDBY_INSTANCE}
                     sleep 15 
-                    aws elbv2 register-targets \\
-                        --target-group-arn ${env.GREEN_TG_ARN} \\
+                    aws elbv2 register-targets \
+                        --target-group-arn ${env.GREEN_TG_ARN} \
                         --targets Id=${env.STANDBY_INSTANCE}
                     sleep 10
                 """
@@ -185,6 +211,7 @@ def prepareRollback(Map config) {
         echo "⚠️ Warning: Standby instance did not become healthy (Final state: ${healthState}). Attempting to proceed with rollback anyway."
     }
 }
+
 
 def executeEc2Rollback(Map config) {
     echo "✅✅✅ EC2 ROLLBACK COMPLETE: Traffic now routed to previous version (GREEN-TG)"
