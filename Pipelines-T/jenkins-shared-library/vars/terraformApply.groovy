@@ -81,50 +81,7 @@ def deployApp(String appName, Map config) {
     echo "Blue Instance IP for ${appName}: ${blueInstanceIP}"
     echo "Green Instance IP for ${appName}: ${greenInstanceIP}"
 
-    def appFiles = []
-    def destFiles = []
-
-    switch(appName) {
-        case "app1":
-            appFiles = ["app_1.py"]
-            destFiles = ["app_app1.py"]
-            break
-        case "app2":
-            appFiles = ["app_2.py"]
-            destFiles = ["app_app2.py"]
-            break
-        case "app3":
-            appFiles = ["app_3.py"]
-            destFiles = ["app_app3.py"]
-            break
-        default:
-            appFiles = ["app.py"]
-            destFiles = ["app_${appName}.py"]
-    }
-
-    def appPath = "${config.tfWorkingDir}/modules/ec2/scripts"
-
-    def deployToInstance = { instanceIP ->
-        sshagent([config.sshKeyId]) {
-            echo "Deploying ${appName} to instance ${instanceIP}"
-            sh "scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${instanceIP}:/home/ec2-user/setup_flask_service.py"
-
-            for (int i = 0; i < appFiles.size(); i++) {
-                sh "scp -o StrictHostKeyChecking=no ${appPath}/${appFiles[i]} ec2-user@${instanceIP}:/home/ec2-user/${destFiles[i]}"
-            }
-
-            sh "ssh -o StrictHostKeyChecking=no ec2-user@${instanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'"
-        }
-    }
-
-    parallel(
-        Blue: {
-            deployToInstance(blueInstanceIP)
-        },
-        Green: {
-            deployToInstance(greenInstanceIP)
-        }
-    )
+    // Removed copying and remote setup steps because provisioning already handles this
 
     // Health check both instances
     [blueInstanceIP, greenInstanceIP].each { ip ->
