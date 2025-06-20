@@ -68,57 +68,40 @@ def prepareRollback(Map config) {
     }
 
     def blueInstanceTag = "${appName}-blue-instance"
-    def rollbackPath = "/${appName}"
+    def rollbackPathWildcard = "/${appName}*"
 
     echo "🔍 Target blue instance tag: ${blueInstanceTag}"
-    echo "🔍 Path pattern for rollback: ${rollbackPath}"
+    echo "🔍 Using wildcard path pattern: ${rollbackPathWildcard}"
 
-    // Modify or create rule to point back to GREEN_TG
+    // Modify existing wildcard rule to point to GREEN_TG
     try {
         def ruleArn = sh(script: """
             aws elbv2 describe-rules \
-                --listener-arn ${env.LISTENER_ARN} \
-                --query "Rules[?Conditions[?Field=='path-pattern' && Values[0]=='${rollbackPath}']].RuleArn" \
-                --output text
+              --listener-arn ${env.LISTENER_ARN} \
+              --query "Rules[?Conditions[?Field=='path-pattern' && contains(Values[0], '${rollbackPathWildcard}')]].RuleArn" \
+              --output text
         """, returnStdout: true).trim()
 
         if (ruleArn && ruleArn != "None") {
-            echo "✅ Found existing rule for ${rollbackPath}: ${ruleArn}"
+            echo "✅ Found existing wildcard rule (${rollbackPathWildcard}): ${ruleArn}"
             sh """
                 aws elbv2 modify-rule \
-                    --rule-arn ${ruleArn} \
-                    --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
+                  --rule-arn ${ruleArn} \
+                  --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
             """
         } else {
-            echo "⚠️ Rule for path '${rollbackPath}' not found. Creating a new rule..."
-
-            def prioritiesRaw = sh(script: """
-                aws elbv2 describe-rules \
-                    --listener-arn ${env.LISTENER_ARN} \
-                    --query "Rules[*].Priority" --output text
-            """, returnStdout: true).trim()
-
-            def priorities = prioritiesRaw.tokenize('\t').findAll { it != 'default' }.collect { it as int }
-            def nextPriority = (priorities.max() ?: 1) + 1
-
-            sh """
-                aws elbv2 create-rule \
-                    --listener-arn ${env.LISTENER_ARN} \
-                    --priority ${nextPriority} \
-                    --conditions Field=path-pattern,Values='${rollbackPath}' \
-                    --actions Type=forward,TargetGroupArn=${env.GREEN_TG_ARN}
-            """
+            error "❌ No existing wildcard rule found for ${rollbackPathWildcard}. Cannot proceed with rollback."
         }
     } catch (Exception e) {
         echo "⚠️ Failed to update listener rule: ${e.message}. Continuing rollback..."
     }
 
-    // Identify healthy blue instance in green TG
+    // Find healthy instances in GREEN TG
     def targetHealthData = sh(script: """
         aws elbv2 describe-target-health \
-            --target-group-arn ${env.GREEN_TG_ARN} \
-            --query 'TargetHealthDescriptions[*].[Target.Id, TargetHealth.State]' \
-            --output text
+          --target-group-arn ${env.GREEN_TG_ARN} \
+          --query 'TargetHealthDescriptions[*].[Target.Id, TargetHealth.State]' \
+          --output text
     """, returnStdout: true).trim()
 
     def targetInstanceIds = targetHealthData.readLines().collect { it.split()[0] }
@@ -130,9 +113,9 @@ def prepareRollback(Map config) {
     def instanceIds = targetInstanceIds.join(' ')
     def instanceDetails = sh(script: """
         aws ec2 describe-instances \
-            --instance-ids ${instanceIds} \
-            --query "Reservations[*].Instances[*].[InstanceId, Tags[?Key=='Name']|[0].Value]" \
-            --output text
+          --instance-ids ${instanceIds} \
+          --query "Reservations[*].Instances[*].[InstanceId, Tags[?Key=='Name']|[0].Value]" \
+          --output text
     """, returnStdout: true).trim()
 
     def blueLine = instanceDetails.readLines().find { line ->
@@ -145,7 +128,7 @@ def prepareRollback(Map config) {
         return
     }
 
-    def (standbyInstanceId, instanceName) = blueLine.split('\t')
+    def (standbyInstanceId, _) = blueLine.split('\t')
     env.STANDBY_INSTANCE = standbyInstanceId
 
     // Wait until instance is healthy
@@ -155,35 +138,30 @@ def prepareRollback(Map config) {
         sleep(time: 10, unit: 'SECONDS')
         healthState = sh(script: """
             aws elbv2 describe-target-health \
-                --target-group-arn ${env.GREEN_TG_ARN} \
-                --targets Id=${env.STANDBY_INSTANCE} \
-                --query 'TargetHealthDescriptions[0].TargetHealth.State' \
-                --output text
+              --target-group-arn ${env.GREEN_TG_ARN} \
+              --targets Id=${env.STANDBY_INSTANCE} \
+              --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+              --output text
         """, returnStdout: true).trim()
         attempts++
         echo "Health check ${attempts}/12: ${healthState}"
 
         if (healthState == 'unused' && attempts > 3) {
-            echo "⚠️ Deregistering and re-registering instance to refresh health checks..."
+            echo "⚠️ Re-registering instance to refresh health checks..."
             sh """
-                aws elbv2 deregister-targets \
-                    --target-group-arn ${env.GREEN_TG_ARN} \
-                    --targets Id=${env.STANDBY_INSTANCE}
+                aws elbv2 deregister-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${env.STANDBY_INSTANCE}
                 sleep 10
-                aws elbv2 register-targets \
-                    --target-group-arn ${env.GREEN_TG_ARN} \
-                    --targets Id=${env.STANDBY_INSTANCE}
+                aws elbv2 register-targets --target-group-arn ${env.GREEN_TG_ARN} --targets Id=${env.STANDBY_INSTANCE}
                 sleep 10
             """
         }
     }
 
     if (healthState != 'healthy') {
-        echo "⚠️ Standby instance did not become healthy. Rollback aborted."
+        echo "❌ Instance did not become healthy. Aborting rollback."
         return
     }
 
-    // Fetch public IP of standby
     def standbyIp = sh(script: """
         aws ec2 describe-instances --instance-ids ${env.STANDBY_INSTANCE} \
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
@@ -191,39 +169,34 @@ def prepareRollback(Map config) {
 
     echo "🛠️ Rolling back app on ${blueInstanceTag} (${standbyIp})"
 
-    // Upload latest setup_flask_service_switch.py before rollback
+    // Upload and execute rollback script
     sshagent([env.SSH_KEY_ID]) {
         def tfDir = env.TF_WORKING_DIR ?: "blue-green-deployment-ecs-test/blue-green-deployment"
         def localScript = "${tfDir}/modules/ec2/scripts/setup_flask_service_switch.py"
 
+        echo "📁 Checking rollback script: ${localScript}"
         if (!fileExists(localScript)) {
             error "❌ Local rollback script not found: ${localScript}"
         }
 
-        echo "📤 Uploading rollback script..."
-        sh """
-            scp -o StrictHostKeyChecking=no ${localScript} ec2-user@${standbyIp}:/home/ec2-user/setup_flask_service_switch.py
-        """
+        echo "📤 Uploading script..."
+        sh "scp -o StrictHostKeyChecking=no ${localScript} ec2-user@${standbyIp}:/home/ec2-user/setup_flask_service_switch.py"
 
         def remoteStatus = sh(script: """
             ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'test -f /home/ec2-user/setup_flask_service_switch.py && echo exists || echo missing'
         """, returnStdout: true).trim()
 
         if (remoteStatus != "exists") {
-            error "❌ Remote rollback script not found on instance. SCP may have failed."
+            error "❌ Remote rollback script missing after SCP."
         }
 
         echo "🔒 Making script executable..."
-        sh """
-            ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'chmod +x /home/ec2-user/setup_flask_service_switch.py'
-        """
+        sh "ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'chmod +x /home/ec2-user/setup_flask_service_switch.py'"
     }
 
-    // Trigger rollback command
+    // Trigger rollback script
     sshagent([env.SSH_KEY_ID]) {
-        sh """
-            ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} rollback'
-        """
+        sh "ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} rollback'"
     }
 
     echo "✅ Rollback completed for ${appName} on ${standbyIp}"
