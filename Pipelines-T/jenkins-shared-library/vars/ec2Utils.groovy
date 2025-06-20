@@ -303,24 +303,24 @@ def deployToBlueInstance(Map config) {
     // 4. Copy App and Restart Service
     def appFile = config.appFile ?: env.APP_FILE
     def appPath = config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"
-    
+
     // Determine the correct app file based on app name
     if (appName) {
         appFile = "app_${appName.replace('app', '')}.py"
     }
-    
+
     sshagent([env.SSH_KEY_ID]) {
         // Copy the app file and setup script (force fresh copy)
         sh """
             # Remove old files first to ensure fresh copy
-            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'rm -f /home/ec2-user/${appFile} /home/ec2-user/setup_flask_service.py'
+            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'rm -f /home/ec2-user/${appFile} /home/ec2-user/setup_flask_service_switch.py'
             
             # Copy fresh files from workspace
             scp -o StrictHostKeyChecking=no ${appPath}/${appFile} ec2-user@${blueInstanceIP}:/home/ec2-user/${appFile}
-            scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service.py ec2-user@${blueInstanceIP}:/home/ec2-user/setup_flask_service.py
+            scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service_switch.py ec2-user@${blueInstanceIP}:/home/ec2-user/setup_flask_service_switch.py
             
             # Set permissions and run setup script
-            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service.py && sudo python3 /home/ec2-user/setup_flask_service.py ${appName}'
+            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service_switch.py && sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName}'
         """
     }
     env.BLUE_INSTANCE_IP = blueInstanceIP
