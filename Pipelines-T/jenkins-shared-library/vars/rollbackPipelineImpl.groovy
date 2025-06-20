@@ -17,6 +17,16 @@ def initialize(Map config) {
     }
 }
 
+def checkout(Map config) {
+    // Only perform checkout for EC2 rollbacks
+    if (config.implementation == 'ec2') {
+        echo "Checking out code from repository for EC2 rollback..."
+        checkout scmGit(branches: [[name: config.repoBranch ?: 'main']], 
+                  extensions: [], 
+                  userRemoteConfigs: [[url: config.repoUrl]])
+    }
+}
+
 def fetchResources(Map config) {
     // Add appName to config if it exists
     def rollbackConfig = config.clone()
@@ -95,6 +105,18 @@ def getStages(Map config) {
         steps {
             script {
                 initialize(config)
+            }
+        }
+    }
+    
+    // Checkout stage - only for EC2
+    stages << stage('Checkout') {
+        when {
+            expression { return config.implementation == 'ec2' }
+        }
+        steps {
+            script {
+                checkout(config)
             }
         }
     }
