@@ -240,7 +240,6 @@ pipeline {
             steps {
                 script {
                     // Create config map with hardcoded implementation
-                    // Create config map with hardcoded implementation
                     def config = [
                         implementation: 'ec2', // Hardcoded to 'ec2'
                         awsRegion: env.AWS_REGION,
@@ -257,6 +256,7 @@ pipeline {
                     
                     // Call the rollback pipeline implementation
                     rollbackPipelineImpl.initialize(config)
+                    rollbackPipelineImpl.checkout(config)
                     rollbackPipelineImpl.fetchResources(config)
                     rollbackPipelineImpl.manualApprovalBeforeRollbackEC2(config)
                     rollbackPipelineImpl.prepareRollback(config)
