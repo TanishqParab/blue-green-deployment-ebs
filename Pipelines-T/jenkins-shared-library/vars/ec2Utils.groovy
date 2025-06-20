@@ -246,93 +246,95 @@ def updateApplication(Map config) {
 
 
 def deployToBlueInstance(Map config) {
-    // Get app name from config or default to empty string (for backward compatibility)
     def appName = config.appName ?: ""
-    def blueTargetGroupName = appName ? "blue-tg-${appName}" : (config.blueTargetGroupName ?: "blue-tg")
-    def blueTag = appName ? "${appName}-blue-instance" : (config.blueTag ?: "Blue-Instance")
-    
-    echo "🔍 Using blue target group name: ${blueTargetGroupName}"
-    echo "🔍 Using blue instance tag: ${blueTag}"
-    
-    // 1. Dynamically get ALB ARN by ALB name (or partial match)
+    def albName = config.albName ?: "blue-green-alb"
+    def blueTargetGroupName = "blue-tg-${appName}"
+    def greenTargetGroupName = "green-tg-${appName}"
+    def blueTag = "${appName}-blue-instance"
+    def pathPattern = "/${appName}"
+
+    echo "🔍 App: ${appName}, ALB: ${albName}, Blue TG: ${blueTargetGroupName}, Blue Tag: ${blueTag}"
+
+    // Get ALB ARN
     def albArn = sh(
-        script: """
-        aws elbv2 describe-load-balancers \\
-            --names "${config.albName}" \\
-            --query 'LoadBalancers[0].LoadBalancerArn' \\
-            --output text
-        """,
+        script: """aws elbv2 describe-load-balancers \
+            --names "${albName}" \
+            --query 'LoadBalancers[0].LoadBalancerArn' --output text""",
+        returnStdout: true
+    ).trim()
+    if (!albArn || albArn == 'None') error "❌ ALB not found: ${albName}"
+    echo "✅ ALB ARN: ${albArn}"
+
+    // Get Listener ARN
+    def listenerArn = sh(
+        script: """aws elbv2 describe-listeners \
+            --load-balancer-arn ${albArn} \
+            --query 'Listeners[?Port==`80`].ListenerArn' --output text""",
+        returnStdout: true
+    ).trim()
+    if (!listenerArn || listenerArn == 'None') error "❌ Listener not found!"
+    echo "✅ Listener ARN: ${listenerArn}"
+
+    // Check current TG routing in rule for this app
+    def currentRuleJson = sh(
+        script: """aws elbv2 describe-rules \
+            --listener-arn ${listenerArn} \
+            --query "Rules[?Conditions[?Field=='path-pattern' && Values[0]=='${pathPattern}']]" --output json""",
         returnStdout: true
     ).trim()
 
-    if (!albArn || albArn == 'None') {
-        error "❌ Could not find ALB ARN with name '${config.albName}'"
-    }
-    echo "✅ Found ALB ARN: ${albArn}"
-
-    // 2. Dynamically get Blue Target Group ARN filtered by ALB ARN and TG name/tag
     def blueTGArn = sh(
-        script: """
-        aws elbv2 describe-target-groups \\
-            --load-balancer-arn ${albArn} \\
-            --query "TargetGroups[?contains(TargetGroupName, '${blueTargetGroupName}')].TargetGroupArn | [0]" \\
-            --output text
-        """,
+        script: """aws elbv2 describe-target-groups \
+            --names ${blueTargetGroupName} \
+            --query 'TargetGroups[0].TargetGroupArn' --output text""",
         returnStdout: true
     ).trim()
 
-    if (!blueTGArn || blueTGArn == 'None') {
-        error "❌ Could not find Blue Target Group ARN with name containing '${blueTargetGroupName}' under ALB '${config.albName}'"
-    }
-    echo "✅ Found Blue Target Group ARN: ${blueTGArn}"
+    def greenTGArn = sh(
+        script: """aws elbv2 describe-target-groups \
+            --names ${greenTargetGroupName} \
+            --query 'TargetGroups[0].TargetGroupArn' --output text""",
+        returnStdout: true
+    ).trim()
 
-    // 3. Get Blue Instance IP
+    if (currentRuleJson.contains(greenTGArn)) {
+        echo "⚠️ Green target group is currently active. Skipping deployment to Blue."
+        return
+    }
+
+    echo "✅ Blue target group is currently active. Proceeding with deployment..."
+
+    // Get blue instance IP
     def blueInstanceIP = sh(
-        script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
-        --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
-        """,
+        script: """aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' --output text""",
         returnStdout: true
     ).trim()
 
-    if (!blueInstanceIP || blueInstanceIP == 'None') {
-        error "❌ No running Blue instance found!"
-    }
+    if (!blueInstanceIP || blueInstanceIP == 'None') error "❌ No running Blue instance found!"
     echo "✅ Deploying to Blue instance: ${blueInstanceIP}"
 
-    // 4. Copy App and Restart Service
-    def appFile = config.appFile ?: env.APP_FILE
+    def appFile = config.appFile ?: "app_${appName.replace('app', '')}.py"
     def appPath = config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"
 
-    // Determine the correct app file based on app name
-    if (appName) {
-        appFile = "app_${appName.replace('app', '')}.py"
-    }
-
     sshagent([env.SSH_KEY_ID]) {
-        // Copy the app file and setup script (force fresh copy)
         sh """
-            # Remove old files first to ensure fresh copy
             ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'rm -f /home/ec2-user/${appFile} /home/ec2-user/setup_flask_service_switch.py'
-            
-            # Copy fresh files from workspace
             scp -o StrictHostKeyChecking=no ${appPath}/${appFile} ec2-user@${blueInstanceIP}:/home/ec2-user/${appFile}
             scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service_switch.py ec2-user@${blueInstanceIP}:/home/ec2-user/setup_flask_service_switch.py
-            
-            # Set permissions and run setup script
             ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service_switch.py && sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} switch'
         """
     }
+
     env.BLUE_INSTANCE_IP = blueInstanceIP
 
-    // 5. Health Check for Blue Instance
+    // Health check
     echo "🔍 Monitoring health of Blue instance..."
-
     def blueInstanceId = sh(
-        script: """
-        aws ec2 describe-instances --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \\
-        --query 'Reservations[0].Instances[0].InstanceId' --output text
-        """,
+        script: """aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text""",
         returnStdout: true
     ).trim()
 
@@ -343,13 +345,11 @@ def deployToBlueInstance(Map config) {
     while (healthStatus != 'healthy' && attempts < maxAttempts) {
         sleep(time: 10, unit: 'SECONDS')
         healthStatus = sh(
-            script: """
-            aws elbv2 describe-target-health \\
-            --target-group-arn ${blueTGArn} \\
-            --targets Id=${blueInstanceId} \\
-            --query 'TargetHealthDescriptions[0].TargetHealth.State' \\
-            --output text
-            """,
+            script: """aws elbv2 describe-target-health \
+                --target-group-arn ${blueTGArn} \
+                --targets Id=${blueInstanceId} \
+                --query 'TargetHealthDescriptions[0].TargetHealth.State' \
+                --output text""",
             returnStdout: true
         ).trim()
         attempts++
