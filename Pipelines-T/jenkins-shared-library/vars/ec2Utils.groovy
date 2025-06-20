@@ -320,7 +320,7 @@ def deployToBlueInstance(Map config) {
             scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service_switch.py ec2-user@${blueInstanceIP}:/home/ec2-user/setup_flask_service_switch.py
             
             # Set permissions and run setup script
-            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service_switch.py && sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName}'
+            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service_switch.py && sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} switch'
         """
     }
     env.BLUE_INSTANCE_IP = blueInstanceIP
@@ -362,6 +362,7 @@ def deployToBlueInstance(Map config) {
 
     echo "✅ Blue instance is healthy!"
 }
+
 
 
 
