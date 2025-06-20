@@ -98,7 +98,7 @@ def prepareRollback(Map config) {
                     --query "Rules[*].Priority" --output text
             """, returnStdout: true).trim()
 
-            def priorities = prioritiesRaw.tokenize('\n').findAll { it != 'default' }.collect { it as int }
+            def priorities = prioritiesRaw.tokenize('\t').findAll { it != 'default' }.collect { it as int }
             def nextPriority = (priorities.max() ?: 1) + 1
 
             sh """
@@ -183,7 +183,7 @@ def prepareRollback(Map config) {
         return
     }
 
-    // 🧠 Rollback logic: Call setup_flask_service_switch.py with rollback
+    // Fetch public IP of standby
     def standbyIp = sh(script: """
         aws ec2 describe-instances --instance-ids ${env.STANDBY_INSTANCE} \
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
@@ -191,17 +191,23 @@ def prepareRollback(Map config) {
 
     echo "🛠️ Rolling back app on ${blueInstanceTag} (${standbyIp})"
 
+    // Upload latest setup_flask_service_switch.py before rollback
     sshagent([env.SSH_KEY_ID]) {
         sh """
-            ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} '
-                sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} rollback
-            '
+            scp -o StrictHostKeyChecking=no ${env.TF_WORKING_DIR}/modules/ec2/scripts/setup_flask_service_switch.py ec2-user@${standbyIp}:/home/ec2-user/setup_flask_service_switch.py
+            ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'chmod +x /home/ec2-user/setup_flask_service_switch.py'
+        """
+    }
+
+    // Trigger rollback command
+    sshagent([env.SSH_KEY_ID]) {
+        sh """
+            ssh -o StrictHostKeyChecking=no ec2-user@${standbyIp} 'sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} rollback'
         """
     }
 
     echo "✅ Rollback completed for ${appName} on ${standbyIp}"
 }
-
 
 def executeEc2Rollback(Map config) {
     echo "✅✅✅ EC2 ROLLBACK COMPLETE: Traffic now routed to previous version (GREEN-TG)"
