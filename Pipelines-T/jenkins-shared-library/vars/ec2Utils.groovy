@@ -275,7 +275,7 @@ def deployToBlueInstance(Map config) {
     if (!listenerArn || listenerArn == 'None') error "❌ Listener not found!"
     echo "✅ Listener ARN: ${listenerArn}"
 
-    // Check current TG routing in rule for this app
+    // Check current TG routing
     def currentRuleJson = sh(
         script: """aws elbv2 describe-rules \
             --listener-arn ${listenerArn} \
@@ -304,7 +304,7 @@ def deployToBlueInstance(Map config) {
 
     echo "✅ Blue target group is currently active. Proceeding with deployment..."
 
-    // Get blue instance IP
+    // Get Blue Instance IP
     def blueInstanceIP = sh(
         script: """aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=${blueTag}" "Name=instance-state-name,Values=running" \
@@ -315,21 +315,34 @@ def deployToBlueInstance(Map config) {
     if (!blueInstanceIP || blueInstanceIP == 'None') error "❌ No running Blue instance found!"
     echo "✅ Deploying to Blue instance: ${blueInstanceIP}"
 
-    def appFile = config.appFile ?: "app_${appName.replace('app', '')}.py"
+    // Determine app filename and versioning
+    def appBase = appName.replace('app', '')
+    def timestamp = sh(script: "date +%s", returnStdout: true).trim()
+    def appFileVer = "app_${appBase}_v${timestamp}.py"
+    def appSymlink = "app_${appBase}.py"
     def appPath = config.appPath ?: "${env.TF_WORKING_DIR}/modules/ec2/scripts"
+    def appFileSource = "${appPath}/${config.appFile ?: appSymlink}"
 
     sshagent([env.SSH_KEY_ID]) {
         sh """
-            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'rm -f /home/ec2-user/${appFile} /home/ec2-user/setup_flask_service_switch.py'
-            scp -o StrictHostKeyChecking=no ${appPath}/${appFile} ec2-user@${blueInstanceIP}:/home/ec2-user/${appFile}
-            scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service_switch.py ec2-user@${blueInstanceIP}:/home/ec2-user/setup_flask_service_switch.py
-            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} 'chmod +x /home/ec2-user/setup_flask_service_switch.py && sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} switch'
+            # Upload new version and switch symlink
+            scp -o StrictHostKeyChecking=no ${appFileSource} ec2-user@${blueInstanceIP}:/home/ec2-user/${appFileVer}
+            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} '
+                ln -sf /home/ec2-user/${appFileVer} /home/ec2-user/${appSymlink}
+            '
+
+            # Setup script
+            scp -o StrictHostKeyChecking=no ${appPath}/setup_flask_service_switch.py ec2-user@${blueInstanceIP}:/home/ec2-user/
+            ssh -o StrictHostKeyChecking=no ec2-user@${blueInstanceIP} '
+                chmod +x /home/ec2-user/setup_flask_service_switch.py &&
+                sudo python3 /home/ec2-user/setup_flask_service_switch.py ${appName} switch
+            '
         """
     }
 
     env.BLUE_INSTANCE_IP = blueInstanceIP
 
-    // Health check
+    // Health Check
     echo "🔍 Monitoring health of Blue instance..."
     def blueInstanceId = sh(
         script: """aws ec2 describe-instances \
@@ -362,10 +375,6 @@ def deployToBlueInstance(Map config) {
 
     echo "✅ Blue instance is healthy!"
 }
-
-
-
-
 
 def switchTraffic(Map config) {
     // Get app name from config or default to empty string (for backward compatibility)
