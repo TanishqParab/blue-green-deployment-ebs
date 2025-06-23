@@ -693,9 +693,8 @@ def postRollbackActions(Map config) {
         
         def existingRuleArn = sh(
             script: """
-                aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \\
-                --query "Rules[?contains(Conditions[0].PathPatternConfig.Values,'${appPathPattern}')].RuleArn" \\
-                --output text
+                aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} --output json | \\
+                jq -r '.Rules[] | select(.Conditions != null) | select((.Conditions[].PathPatternConfig.Values | arrays) and (.Conditions[].PathPatternConfig.Values[] | contains("${appPathPattern}"))) | .RuleArn' | head -1
             """,
             returnStdout: true
         ).trim()
