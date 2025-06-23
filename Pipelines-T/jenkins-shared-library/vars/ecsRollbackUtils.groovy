@@ -538,9 +538,8 @@ def executeEcsRollback(Map config) {
         
         def existingRuleArn = sh(
             script: """
-                aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} \\
-                --query "Rules[?contains(Actions[0].ForwardConfig.TargetGroups[0].TargetGroupArn,'${env.CURRENT_TG_ARN}') || contains(Actions[0].TargetGroupArn,'${env.CURRENT_TG_ARN}')].RuleArn" \\
-                --output text
+                aws elbv2 describe-rules --listener-arn ${env.LISTENER_ARN} --output json | \\
+                jq -r '.Rules[] | select(.Conditions != null) | select((.Conditions[].PathPatternConfig.Values | arrays) and (.Conditions[].PathPatternConfig.Values[] | contains("/app${appSuffix}*"))) | .RuleArn' | head -1
             """,
             returnStdout: true
         ).trim()
