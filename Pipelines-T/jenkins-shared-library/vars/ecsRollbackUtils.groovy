@@ -10,7 +10,7 @@ def fetchResources(Map config) {
         echo "Working with app: ${appName}"
         
         env.ECS_CLUSTER = sh(
-            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | awk -F'/' '{print \\$2}'",
+            script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | awk -F'/' '{print \$2}'",
             returnStdout: true
         ).trim() ?: "blue-green-cluster"
 
