@@ -1214,15 +1214,22 @@ def scaleDownOldEnvironment(Map config) {
         echo "⚠️ No healthy targets found, but proceeding with scale down since traffic is switching."
     }
 
-    // --- Scale down the OLD (previously active) ECS service ---
-    def oldActiveService
-    if (config.ACTIVE_ENV == "BLUE") {
-        // If BLUE is active, scale down GREEN (old)
-        oldActiveService = "app${appSuffix}-green-service"
+    // --- Scale down the service that is NOT currently receiving traffic ---
+    // After traffic switch, we want to scale down the service that's no longer active
+    def serviceToScaleDown
+    
+    // The IDLE_SERVICE is the one we just deployed to and should now be active
+    // So we scale down the service that's NOT the IDLE_SERVICE
+    if (config.IDLE_ENV == "BLUE") {
+        // We just switched TO blue, so scale down green (old active)
+        serviceToScaleDown = "app${appSuffix}-green-service"
     } else {
-        // If GREEN is active, scale down BLUE (old)
-        oldActiveService = "app${appSuffix}-blue-service"
+        // We just switched TO green, so scale down blue (old active)
+        serviceToScaleDown = "app${appSuffix}-blue-service"
     }
+    
+    echo "🔍 IDLE_ENV (newly active): ${config.IDLE_ENV}"
+    echo "🔽 Will scale down OLD service: ${serviceToScaleDown}"
     
     // Try to find the actual service name from ECS
     try {
@@ -1232,34 +1239,34 @@ def scaleDownOldEnvironment(Map config) {
         ).trim()
         def services = new JsonSlurper().parseText(servicesJson)
         
-        def targetServiceName = config.ACTIVE_ENV == "BLUE" ? "green" : "blue"
+        def targetServiceName = config.IDLE_ENV == "BLUE" ? "green" : "blue"
         def matchedService = services.find { it.toLowerCase().contains(targetServiceName) }
         
         if (matchedService) {
-            oldActiveService = matchedService.tokenize('/').last()
+            serviceToScaleDown = matchedService.tokenize('/').last()
         }
     } catch (Exception e) {
         echo "⚠️ Could not fetch service list: ${e.message}. Using default name."
     }
     
-    echo "🔄 Scaling down OLD service: ${oldActiveService} (was previously active)"
+    echo "🔄 Scaling down OLD service: ${serviceToScaleDown} (was previously active)"
     
     try {
         sh """
         aws ecs update-service \\
           --cluster ${config.ECS_CLUSTER} \\
-          --service ${oldActiveService} \\
+          --service ${serviceToScaleDown} \\
           --desired-count 0
         """
-        echo "✅ Scaled down old service: ${oldActiveService}"
+        echo "✅ Scaled down old service: ${serviceToScaleDown}"
 
         echo "⏳ Waiting for old service to scale down..."
         sh """
         aws ecs wait services-stable \\
           --cluster ${config.ECS_CLUSTER} \\
-          --services ${oldActiveService}
+          --services ${serviceToScaleDown}
         """
-        echo "✅ Old service ${oldActiveService} is now stable (scaled down)"
+        echo "✅ Old service ${serviceToScaleDown} is now stable (scaled down)"
     } catch (Exception e) {
         echo "⚠️ Warning during scale down: ${e.message}"
         echo "⚠️ Continuing despite scale down issues..."
