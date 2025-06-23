@@ -409,23 +409,40 @@ def ensureTargetGroupAssociation(Map config) {
     if (!targetGroupInfo || targetGroupInfo.isEmpty() || targetGroupInfo == "None") {
         echo "⚠️ Target group ${config.IDLE_ENV} is not associated with a load balancer. Creating a path-based rule..."
         
-        // Use fixed priority to avoid parsing issues
-        def nextPriority = 250
-        echo "Using rule priority: ${nextPriority}"
+        // Find an available priority
+        def usedPriorities = sh(
+            script: "aws elbv2 describe-rules --listener-arn ${config.LISTENER_ARN} --query 'Rules[?Priority!=`default`].Priority' --output json 2>/dev/null || echo '[]'",
+            returnStdout: true
+        ).trim()
+        
+        def usedPrioritiesJson = parseJsonWithErrorHandling(usedPriorities)
+        def nextPriority = 100
+        
+        // Find the first available priority
+        while (usedPrioritiesJson.contains(nextPriority.toString()) || usedPrioritiesJson.contains(nextPriority)) {
+            nextPriority++
+        }
+        
+        echo "Using available rule priority: ${nextPriority}"
         
         // Use app-specific path pattern
         def pathPattern = "/app${appSuffix}/*"
 
-        sh """
-        aws elbv2 create-rule \\
-            --listener-arn ${config.LISTENER_ARN} \\
-            --priority ${nextPriority} \\
-            --conditions '[{"Field":"path-pattern","Values":["${pathPattern}"]}]' \\
-            --actions '[{"Type":"forward","TargetGroupArn":"${config.IDLE_TG_ARN}"}]'
-        """
+        try {
+            sh """
+            aws elbv2 create-rule \\
+                --listener-arn ${config.LISTENER_ARN} \\
+                --priority ${nextPriority} \\
+                --conditions '[{"Field":"path-pattern","Values":["${pathPattern}"]}]' \\
+                --actions '[{"Type":"forward","TargetGroupArn":"${config.IDLE_TG_ARN}"}]'
+            """
+        } catch (Exception e) {
+            echo "⚠️ Warning: Could not create rule: ${e.message}"
+            echo "⚠️ Rule may already exist or priority conflict occurred"
+        }
 
-        sleep(10)
-        echo "✅ Target group associated with load balancer via path rule (priority ${nextPriority})"
+        sleep(5)
+        echo "✅ Target group association attempted with priority ${nextPriority}"
     } else {
         echo "✅ Target group is already associated with load balancer"
     }
