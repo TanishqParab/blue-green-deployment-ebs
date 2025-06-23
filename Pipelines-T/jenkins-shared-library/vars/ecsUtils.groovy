@@ -1227,3 +1227,4 @@ def scaleDownOldEnvironment(Map config) {
         echo "⚠️ Warning during scale down: ${e.message}"
         echo "⚠️ Continuing despite scale down issues..."
     }
+}
