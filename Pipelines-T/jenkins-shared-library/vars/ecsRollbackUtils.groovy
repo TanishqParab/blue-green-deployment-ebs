@@ -28,12 +28,12 @@ def fetchResources(Map config) {
         def appSuffix = appName.replace("app_", "")
         
         env.BLUE_TG_ARN = sh(
-            script: "aws elbv2 describe-target-groups --names blue-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+            script: "aws elbv2 describe-target-groups --names blue-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
             returnStdout: true
         ).trim()
 
         env.GREEN_TG_ARN = sh(
-            script: "aws elbv2 describe-target-groups --names green-tg-${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+            script: "aws elbv2 describe-target-groups --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
             returnStdout: true
         ).trim()
 
@@ -63,15 +63,15 @@ def fetchResources(Map config) {
         if (currentTargetGroup == env.BLUE_TG_ARN) {
             env.CURRENT_ENV = "BLUE"
             env.ROLLBACK_ENV = "GREEN"
-            env.CURRENT_SERVICE = "blue-service-${appSuffix}"
-            env.ROLLBACK_SERVICE = "green-service-${appSuffix}"
+            env.CURRENT_SERVICE = "app${appSuffix}-blue-service"
+            env.ROLLBACK_SERVICE = "app${appSuffix}-green-service"
             env.CURRENT_TG_ARN = env.BLUE_TG_ARN
             env.ROLLBACK_TG_ARN = env.GREEN_TG_ARN
         } else {
             env.CURRENT_ENV = "GREEN"
             env.ROLLBACK_ENV = "BLUE"
-            env.CURRENT_SERVICE = "green-service-${appSuffix}"
-            env.ROLLBACK_SERVICE = "blue-service-${appSuffix}"
+            env.CURRENT_SERVICE = "app${appSuffix}-green-service"
+            env.ROLLBACK_SERVICE = "app${appSuffix}-blue-service"
             env.CURRENT_TG_ARN = env.GREEN_TG_ARN
             env.ROLLBACK_TG_ARN = env.BLUE_TG_ARN
         }
