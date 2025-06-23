@@ -167,7 +167,7 @@ def fetchResources(Map config) {
         }
         echo "✅ Found ECS Cluster: ${result.ECS_CLUSTER}"
 
-        // 3. Get Target Groups with more flexible matching
+        // 3. Get Target Groups
         def targetGroupsJson = sh(
             script: "aws elbv2 describe-target-groups --region ${awsRegion} --output json",
             returnStdout: true
@@ -177,28 +177,18 @@ def fetchResources(Map config) {
         def allTargetGroups = tgData.TargetGroups ?: []
         
         if (allTargetGroups.isEmpty()) {
-            // Try alternative command format
-            targetGroupsJson = sh(
-                script: "aws elbv2 describe-target-groups --region ${awsRegion}",
-                returnStdout: true
-            ).trim()
-            tgData = parseJsonString(targetGroupsJson)
-            allTargetGroups = tgData.TargetGroups ?: []
-            
-            if (allTargetGroups.isEmpty()) {
-                error """❌ No target groups found in region ${awsRegion}. Please create target groups first.
-                         You need at least two target groups (blue and green) for blue-green deployment."""
-            }
+            error """❌ No target groups found in region ${awsRegion}. Please create target groups first.
+                     You need at least two target groups (blue and green) for blue-green deployment."""
         }
 
         echo "ℹ️ Found ${allTargetGroups.size()} target groups in region ${awsRegion}"
         
-        // 4. Find target groups using more flexible matching
+        // 4. Find target groups using flexible matching
         def findTg = { prefix ->
             allTargetGroups.find { 
-                it.TargetGroupName ==~ /(?i)${prefix}.*/ || 
-                it.TargetGroupName.contains(prefix.toLowerCase())
+                it.TargetGroupName.toLowerCase().contains(prefix.toLowerCase())
             }
+        }
         
         def blueTg = findTg("blue")
         def greenTg = findTg("green")
@@ -215,9 +205,9 @@ def fetchResources(Map config) {
         echo "✅ Found Blue TG: ${blueTg.TargetGroupName} (${result.BLUE_TG_ARN})"
         echo "✅ Found Green TG: ${greenTg.TargetGroupName} (${result.GREEN_TG_ARN})"
 
-        // 5. Get ALB
+        // 5. Get ALB - simplified query
         result.ALB_ARN = sh(
-            script: "aws elbv2 describe-load-balancers --region ${awsRegion} --query 'LoadBalancers[?contains(LoadBalancerName,\`blue-green\`)].LoadBalancerArn' --output text",
+            script: "aws elbv2 describe-load-balancers --region ${awsRegion} --query 'LoadBalancers[?contains(LoadBalancerName, \\`blue-green\\`)].LoadBalancerArn' --output text",
             returnStdout: true
         ).trim()
 
@@ -248,94 +238,9 @@ def fetchResources(Map config) {
         echo "- App Name: ${appName}"
         echo "- App Suffix: ${appSuffix}"
         
-        // Try to get AWS account info for debugging
-        try {
-            def accountId = sh(
-                script: "aws sts get-caller-identity --query Account --output text",
-                returnStdout: true
-            ).trim()
-            echo "- AWS Account: ${accountId}"
-        } catch (Exception ae) {
-            echo "⚠️ Failed to get AWS account info: ${ae.message}"
-        }
-        
         error "❌ Failed to fetch ECS resources. Please verify your AWS infrastructure is properly set up."
     }
 }
-
-def ensureTargetGroupAssociation(Map config) {
-    echo "Ensuring target group is associated with load balancer..."
-
-    if (!config.IDLE_TG_ARN || config.IDLE_TG_ARN.trim() == "") {
-        error "IDLE_TG_ARN is missing or empty"
-    }
-    if (!config.LISTENER_ARN || config.LISTENER_ARN.trim() == "") {
-        error "LISTENER_ARN is missing or empty"
-    }
-    
-    // Get app name from config
-    def appName = config.APP_NAME ?: "app_1"
-    def appSuffix = config.APP_SUFFIX ?: appName.replace("app_", "")
-
-    // Check if target group is associated with load balancer using text output
-    def targetGroupInfo = sh(
-        script: """
-        aws elbv2 describe-target-groups --target-group-arns ${config.IDLE_TG_ARN} --query 'TargetGroups[0].LoadBalancerArns' --output text
-        """,
-        returnStdout: true
-    ).trim()
-
-    // If output is empty or "None", create a rule
-    if (!targetGroupInfo || targetGroupInfo.isEmpty() || targetGroupInfo == "None") {
-        echo "⚠️ Target group ${config.IDLE_ENV} is not associated with a load balancer. Creating a path-based rule..."
-        
-        // Use fixed priority to avoid parsing issues
-        def nextPriority = 250
-        echo "Using rule priority: ${nextPriority}"
-        
-        // Use app-specific path pattern
-        def pathPattern = "/app${appSuffix}/*"
-
-        sh """
-        aws elbv2 create-rule \\
-            --listener-arn ${config.LISTENER_ARN} \\
-            --priority ${nextPriority} \\
-            --conditions '[{"Field":"path-pattern","Values":["${pathPattern}"]}]' \\
-            --actions '[{"Type":"forward","TargetGroupArn":"${config.IDLE_TG_ARN}"}]'
-        """
-
-        sleep(10)
-        echo "✅ Target group associated with load balancer via path rule (priority ${nextPriority})"
-    } else {
-        echo "✅ Target group is already associated with load balancer"
-    }
-}
-
-@NonCPS
-def parseJsonWithErrorHandling(String text) {
-    try {
-        if (!text || text.trim().isEmpty() || text.trim() == "null") {
-            return []
-        }
-        
-        def parsed = new groovy.json.JsonSlurper().parseText(text)
-        
-        if (parsed instanceof List) {
-            return parsed
-        } else if (parsed instanceof Map) {
-            def safeMap = [:]
-            safeMap.putAll(parsed)
-            return safeMap
-        } else {
-            return []
-        }
-    } catch (Exception e) {
-        echo "⚠️ Error parsing JSON: ${e.message}"
-        return []
-    }
-}
-
-
 
 def updateApplication(Map config) {
     echo "Running ECS update application logic..."
