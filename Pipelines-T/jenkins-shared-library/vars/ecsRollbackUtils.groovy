@@ -234,7 +234,7 @@ def prepareRollback(Map config) {
         // Tag the previous image with the app-specific rollback tag
         sh """
         aws ecr batch-get-image --repository-name ${ecrRepoName} --image-ids imageDigest=${imageDigest} --query 'images[0].imageManifest' --output text > image-manifest.json
-        aws ecr put-image --repository-name ${ecrRepoName} --image-tag ${rollbackTag} --image-manifest file://image-manifest.json
+        aws ecr put-image --repository-name ${ecrRepoName} --image-tag ${rollbackTag} --image-manifest file://image-manifest.json || echo "Tag already exists, continuing..."
         """
         
         echo "✅ Tagged previous image as ${rollbackTag}"
@@ -467,7 +467,6 @@ def prepareRollback(Map config) {
         error "❌ ECS rollback preparation failed: ${e.message}"
     }
 }
-
 def testRollbackEnvironment(Map config) {
     echo "🔁 Testing ${env.ROLLBACK_ENV} environment before traffic switch..."
 
