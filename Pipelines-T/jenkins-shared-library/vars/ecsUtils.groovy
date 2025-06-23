@@ -1214,22 +1214,21 @@ def scaleDownOldEnvironment(Map config) {
         echo "⚠️ No healthy targets found, but proceeding with scale down since traffic is switching."
     }
 
-    // --- Scale down the service that is NOT currently receiving traffic ---
-    // After traffic switch, we want to scale down the service that's no longer active
+    // --- Scale down the service that was PREVIOUSLY active (before the switch) ---
     def serviceToScaleDown
     
-    // The IDLE_SERVICE is the one we just deployed to and should now be active
-    // So we scale down the service that's NOT the IDLE_SERVICE
-    if (config.IDLE_ENV == "BLUE") {
-        // We just switched TO blue, so scale down green (old active)
+    // IMPORTANT: After traffic switch, ACTIVE_ENV is where traffic is NOW going
+    // We want to scale down the service that's NOT receiving traffic
+    if (config.ACTIVE_ENV == "BLUE") {
+        // Traffic is now going to BLUE, so scale down GREEN (old)
         serviceToScaleDown = "app${appSuffix}-green-service"
     } else {
-        // We just switched TO green, so scale down blue (old active)
+        // Traffic is now going to GREEN, so scale down BLUE (old)
         serviceToScaleDown = "app${appSuffix}-blue-service"
     }
     
-    echo "🔍 IDLE_ENV (newly active): ${config.IDLE_ENV}"
-    echo "🔽 Will scale down OLD service: ${serviceToScaleDown}"
+    echo "🔍 ACTIVE_ENV (currently receiving traffic): ${config.ACTIVE_ENV}"
+    echo "🔽 Will scale down service NOT receiving traffic: ${serviceToScaleDown}"
     
     // Try to find the actual service name from ECS
     try {
@@ -1239,12 +1238,17 @@ def scaleDownOldEnvironment(Map config) {
         ).trim()
         def services = new JsonSlurper().parseText(servicesJson)
         
-        def targetServiceName = config.IDLE_ENV == "BLUE" ? "green" : "blue"
+        // Find the service that's NOT currently receiving traffic
+        def targetServiceName = config.ACTIVE_ENV == "BLUE" ? "green" : "blue"  
         def matchedService = services.find { it.toLowerCase().contains(targetServiceName) }
         
         if (matchedService) {
             serviceToScaleDown = matchedService.tokenize('/').last()
         }
+        
+        echo "🔍 Found service to scale down: ${serviceToScaleDown}"
+        echo "🔍 Traffic is currently going TO: ${config.ACTIVE_ENV}"
+        echo "🔍 So we scale down the OTHER environment's service: ${targetServiceName}"
     } catch (Exception e) {
         echo "⚠️ Could not fetch service list: ${e.message}. Using default name."
     }
