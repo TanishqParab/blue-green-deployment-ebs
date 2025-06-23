@@ -146,167 +146,163 @@ def detectChanges(Map config) {
 }
 
 import groovy.json.JsonSlurper
+import groovy.json.JsonOutput
 
 def fetchResources(Map config) {
     echo "🔄 Fetching ECS and ALB resources..."
 
     def result = [:]
-
+    def appName = env.CHANGED_APP ?: config.appName ?: "app_1"
+    def appSuffix = appName.replace("app_", "")
+    
     try {
-        // Use the app detected in detectChanges or from config
-        def appName = env.CHANGED_APP ?: config.appName ?: "app_1"
-        def appSuffix = appName.replace("app_", "")
-        
         result.APP_NAME = appName
         result.APP_SUFFIX = appSuffix
         
+        // Get ECS cluster
         result.ECS_CLUSTER = sh(
             script: "aws ecs list-clusters --query 'clusterArns[0]' --output text | cut -d'/' -f2",
             returnStdout: true
         ).trim()
 
-        // Try to get app-specific target groups with the correct naming pattern
-        result.BLUE_TG_ARN = sh(
-            script: "aws elbv2 describe-target-groups --names blue-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names blue-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
+        if (!result.ECS_CLUSTER) {
+            error "❌ No ECS clusters found in the current AWS region"
+        }
+
+        // Get all target groups and parse as JSON for more reliable searching
+        def targetGroupsJson = sh(
+            script: "aws elbv2 describe-target-groups --output json",
             returnStdout: true
         ).trim()
+        
+        def tgData = parseJsonString(targetGroupsJson)
+        def allTargetGroups = tgData.TargetGroups ?: []
+        
+        if (allTargetGroups.isEmpty()) {
+            error "❌ No target groups found in the current AWS region"
+        }
 
-        result.GREEN_TG_ARN = sh(
-            script: "aws elbv2 describe-target-groups --names green-tg-app${appSuffix} --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || aws elbv2 describe-target-groups --names green-tg --query 'TargetGroups[0].TargetGroupArn' --output text",
-            returnStdout: true
-        ).trim()
+        // Try to find app-specific target groups first, then fall back to generic names
+        def blueTg = allTargetGroups.find { 
+            it.TargetGroupName == "blue-tg-app${appSuffix}" || 
+            it.TargetGroupName == "blue-tg-${appSuffix}" ||
+            it.TargetGroupName == "blue-tg"
+        }
+        
+        def greenTg = allTargetGroups.find { 
+            it.TargetGroupName == "green-tg-app${appSuffix}" || 
+            it.TargetGroupName == "green-tg-${appSuffix}" ||
+            it.TargetGroupName == "green-tg"
+        }
 
+        // If still not found, try any target group with "blue" or "green" in the name
+        if (!blueTg) {
+            blueTg = allTargetGroups.find { it.TargetGroupName.toLowerCase().contains("blue") }
+        }
+        if (!greenTg) {
+            greenTg = allTargetGroups.find { it.TargetGroupName.toLowerCase().contains("green") }
+        }
+
+        if (!blueTg) {
+            echo "⚠️ Available target groups:"
+            allTargetGroups.each { tg -> echo "- ${tg.TargetGroupName}" }
+            error "❌ Could not find a blue target group for app ${appName}"
+        }
+        if (!greenTg) {
+            echo "⚠️ Available target groups:"
+            allTargetGroups.each { tg -> echo "- ${tg.TargetGroupName}" }
+            error "❌ Could not find a green target group for app ${appName}"
+        }
+
+        result.BLUE_TG_ARN = blueTg.TargetGroupArn
+        result.GREEN_TG_ARN = greenTg.TargetGroupArn
+
+        // Get ALB and listener
         result.ALB_ARN = sh(
             script: "aws elbv2 describe-load-balancers --names blue-green-alb --query 'LoadBalancers[0].LoadBalancerArn' --output text",
             returnStdout: true
         ).trim()
+
+        if (!result.ALB_ARN) {
+            error "❌ Could not find ALB named 'blue-green-alb'"
+        }
 
         result.LISTENER_ARN = sh(
             script: "aws elbv2 describe-listeners --load-balancer-arn ${result.ALB_ARN} --query 'Listeners[0].ListenerArn' --output text",
             returnStdout: true
         ).trim()
 
-        // Check for app-specific routing rule using the exact path pattern from Terraform
-        def appPathPattern = "/app${appSuffix}*"  // Matches Terraform config: "/app1*", "/app2*", "/app3*"
-        
-        // Get all rules for the listener
+        if (!result.LISTENER_ARN) {
+            error "❌ Could not find listener for ALB ${result.ALB_ARN}"
+        }
+
+        // Determine current live environment
         def rulesJson = sh(
-            script: """
-                aws elbv2 describe-rules --listener-arn ${result.LISTENER_ARN} --output json
-            """,
+            script: "aws elbv2 describe-rules --listener-arn ${result.LISTENER_ARN} --output json",
             returnStdout: true
         ).trim()
         
-        // Parse JSON safely using the NonCPS method
-        def parsedRules = parseJsonString(rulesJson)
-        def rules = parsedRules.Rules ?: []
-        def ruleArn = null
-        
-        // Find the rule that matches our path pattern
-        for (def rule : rules) {
-            if (rule.Priority != 'default' && rule.Conditions) {
-                for (def condition : rule.Conditions) {
-                    if (condition.Field == 'path-pattern' && condition.PathPatternConfig && condition.PathPatternConfig.Values) {
-                        for (def pattern : condition.PathPatternConfig.Values) {
-                            if (pattern == appPathPattern) {
-                                ruleArn = rule.RuleArn
-                                break
-                            }
-                        }
-                    }
-                    if (ruleArn) break
-                }
-            }
-            if (ruleArn) break
-        }
-        
-        echo "Looking for path pattern: ${appPathPattern}"
-        echo "Found rule ARN: ${ruleArn ?: 'None'}"
+        def rulesData = parseJsonString(rulesJson)
+        def rules = rulesData.Rules ?: []
         
         def liveTgArn = null
+        def appPathPattern = "/app${appSuffix}*"
         
-        if (ruleArn) {
-            // Get target group from app-specific rule
-            for (def rule : rules) {
-                if (rule.RuleArn == ruleArn && rule.Actions && rule.Actions.size() > 0) {
-                    def action = rule.Actions[0]
-                    if (action.Type == 'forward') {
+        for (rule in rules) {
+            if (rule.Priority != 'default' && rule.Conditions) {
+                def pathCondition = rule.Conditions.find { 
+                    it.Field == 'path-pattern' && 
+                    it.PathPatternConfig?.Values?.any { it == appPathPattern }
+                }
+                
+                if (pathCondition) {
+                    def action = rule.Actions?.find { it.Type == 'forward' }
+                    if (action) {
                         if (action.TargetGroupArn) {
                             liveTgArn = action.TargetGroupArn
-                        } else if (action.ForwardConfig && action.ForwardConfig.TargetGroups) {
-                            // Find target group with highest weight
-                            def maxWeight = 0
-                            for (def tg : action.ForwardConfig.TargetGroups) {
-                                if (tg.Weight > maxWeight) {
-                                    maxWeight = tg.Weight
-                                    liveTgArn = tg.TargetGroupArn
-                                }
-                            }
+                        } else if (action.ForwardConfig?.TargetGroups) {
+                            def maxWeight = action.ForwardConfig.TargetGroups.max { it.Weight ?: 0 }
+                            liveTgArn = maxWeight?.TargetGroupArn
                         }
                     }
                     break
                 }
             }
-        } else {
-            // If no rule found for this app, we need to create one
-            echo "No rule found for ${appPathPattern}, will need to create one"
-            
-            // For now, just use the blue target group as default
-            liveTgArn = result.BLUE_TG_ARN
-            echo "Using blue target group as default: ${liveTgArn}"
         }
 
-        // Add this after the liveTgArn determination
+        // Set live/idle environments
         if (liveTgArn == result.BLUE_TG_ARN) {
             result.LIVE_ENV = "BLUE"
             result.IDLE_ENV = "GREEN"
             result.LIVE_TG_ARN = result.BLUE_TG_ARN
             result.IDLE_TG_ARN = result.GREEN_TG_ARN
-            result.LIVE_SERVICE = "app${appSuffix}-blue-service"
-            result.IDLE_SERVICE = "app${appSuffix}-green-service"
         } else if (liveTgArn == result.GREEN_TG_ARN) {
             result.LIVE_ENV = "GREEN"
             result.IDLE_ENV = "BLUE"
             result.LIVE_TG_ARN = result.GREEN_TG_ARN
             result.IDLE_TG_ARN = result.BLUE_TG_ARN
-            result.LIVE_SERVICE = "app${appSuffix}-green-service"
-            result.IDLE_SERVICE = "app${appSuffix}-blue-service"
         } else {
-            echo "⚠️ Live Target Group ARN (${liveTgArn}) does not match Blue or Green Target Groups. Defaulting to BLUE."
+            echo "⚠️ Could not determine live environment from rules, defaulting to BLUE"
             result.LIVE_ENV = "BLUE"
             result.IDLE_ENV = "GREEN"
             result.LIVE_TG_ARN = result.BLUE_TG_ARN
             result.IDLE_TG_ARN = result.GREEN_TG_ARN
-            result.LIVE_SERVICE = "app${appSuffix}-blue-service"
-            result.IDLE_SERVICE = "app${appSuffix}-green-service"
         }
+
+        // Get service names
+        def services = sh(
+            script: "aws ecs list-services --cluster ${result.ECS_CLUSTER} --output text | tr '\\t' '\\n' | grep -o '[^/]*\$'",
+            returnStdout: true
+        ).trim().split("\\s+")
         
-        // Check if app-specific services exist, fall back to default if not
-        try {
-            // Get service names directly to avoid JSON parsing issues
-            def serviceNames = sh(
-                script: """
-                    aws ecs list-services --cluster ${result.ECS_CLUSTER} --output text | tr '\\t' '\\n' | grep -o '[^/]*\$'
-                """,
-                returnStdout: true
-            ).trim().split("\\s+")
-            
-            def blueServiceName = "app${appSuffix}-blue-service"
-            def greenServiceName = "app${appSuffix}-green-service"
-            
-            def blueServiceExists = serviceNames.find { it == blueServiceName }
-            def greenServiceExists = serviceNames.find { it == greenServiceName }
-            
-            if (!blueServiceExists || !greenServiceExists) {
-                result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
-                result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
-                echo "⚠️ App-specific services not found, falling back to default service names"
-            }
-        } catch (Exception e) {
-            echo "⚠️ Error checking service existence: ${e.message}. Falling back to default service names."
-            result.LIVE_SERVICE = result.LIVE_ENV.toLowerCase() + "-service"
-            result.IDLE_SERVICE = result.IDLE_ENV.toLowerCase() + "-service"
-        }
+        def blueService = services.find { it == "app${appSuffix}-blue-service" } ?: services.find { it == "blue-service" }
+        def greenService = services.find { it == "app${appSuffix}-green-service" } ?: services.find { it == "green-service" }
+
+        if (!blueService) error "❌ Could not find blue service"
+        if (!greenService) error "❌ Could not find green service"
+
+        result.LIVE_SERVICE = result.LIVE_ENV == "BLUE" ? blueService : greenService
+        result.IDLE_SERVICE = result.IDLE_ENV == "BLUE" ? blueService : greenService
 
         echo "✅ ECS Cluster: ${result.ECS_CLUSTER}"
         echo "✅ App Name: ${result.APP_NAME}"
@@ -322,29 +318,22 @@ def fetchResources(Map config) {
         return result
 
     } catch (Exception e) {
+        echo "⚠️ Error details:"
+        echo "App Name: ${appName}"
+        echo "App Suffix: ${appSuffix}"
+        sh "aws elbv2 describe-target-groups --query 'TargetGroups[*].TargetGroupName' --output table"
         error "❌ Failed to fetch ECS resources: ${e.message}"
     }
 }
 
+// Rest of your existing methods (ensureTargetGroupAssociation, updateApplication, etc.) remain the same
 @NonCPS
 def parseJsonString(String json) {
     try {
         if (!json || json.trim().isEmpty() || json.trim() == "null") {
-            return []
+            return [:]
         }
-        
-        def parsed = new JsonSlurper().parseText(json)
-        
-        // Handle different types of JSON responses
-        if (parsed instanceof List) {
-            return parsed
-        } else if (parsed instanceof Map) {
-            def safeMap = [:]
-            safeMap.putAll(parsed)
-            return safeMap
-        } else {
-            return parsed
-        }
+        return new JsonSlurper().parseText(json)
     } catch (Exception e) {
         echo "⚠️ Error parsing JSON: ${e.message}"
         return [:]
