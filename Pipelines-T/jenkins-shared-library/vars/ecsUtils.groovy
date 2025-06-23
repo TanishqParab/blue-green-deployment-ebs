@@ -1215,11 +1215,31 @@ def scaleDownOldEnvironment(Map config) {
     }
 
     // --- Scale down the OLD (previously active) ECS service ---
-    def oldActiveService = config.ACTIVE_ENV == "BLUE" ? "green-service" : "blue-service"
+    def oldActiveService
     if (config.ACTIVE_ENV == "BLUE") {
-        oldActiveService = serviceNames.find { it.toLowerCase().contains("green") } ?: "green-service"
+        // If BLUE is active, scale down GREEN (old)
+        oldActiveService = "app${appSuffix}-green-service"
     } else {
-        oldActiveService = serviceNames.find { it.toLowerCase().contains("blue") } ?: "blue-service"
+        // If GREEN is active, scale down BLUE (old)
+        oldActiveService = "app${appSuffix}-blue-service"
+    }
+    
+    // Try to find the actual service name from ECS
+    try {
+        def servicesJson = sh(
+            script: "aws ecs list-services --cluster ${config.ECS_CLUSTER} --query 'serviceArns' --output json",
+            returnStdout: true
+        ).trim()
+        def services = new JsonSlurper().parseText(servicesJson)
+        
+        def targetServiceName = config.ACTIVE_ENV == "BLUE" ? "green" : "blue"
+        def matchedService = services.find { it.toLowerCase().contains(targetServiceName) }
+        
+        if (matchedService) {
+            oldActiveService = matchedService.tokenize('/').last()
+        }
+    } catch (Exception e) {
+        echo "⚠️ Could not fetch service list: ${e.message}. Using default name."
     }
     
     echo "🔄 Scaling down OLD service: ${oldActiveService} (was previously active)"
